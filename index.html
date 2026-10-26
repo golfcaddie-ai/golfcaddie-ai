@@ -2,7 +2,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
-<title>GolfCaddie AI v89</title>
+<title>GolfCaddie AI v90</title>
 
 <!-- PWA / Home Screen -->
 <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -364,6 +364,19 @@ select.finput{-webkit-appearance:none;appearance:none;background-image:url("data
 .sc.bo{border:1.5px solid var(--gold);color:var(--gold);border-radius:3px}
 .sc.db{border:1.5px solid #e67e22;color:#e67e22;border-radius:3px;box-shadow:0 0 0 2px #14301f,0 0 0 3.5px #e67e22}
 .chip2{display:inline-block;background:rgba(0,0,0,.2);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:4px 9px;font-size:.74rem;margin:2px 4px 2px 0}
+.shot-card .shot-hdr{padding-right:34px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chipbtn{min-width:48px;min-height:44px;padding:0 12px;border-radius:10px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.07);color:var(--cream);font-family:'DM Sans',sans-serif;font-size:.9rem;font-weight:500;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.chipbtn.sug{border:1.5px solid var(--gold);color:#e8c872}
+.chipbtn.on{background:var(--gold);border-color:var(--gold);color:#14301f;font-weight:700}
+.chipbtn.mo{color:var(--tl)}
+.lierow{display:flex;gap:5px}
+.lierow .chipbtn{flex:1;min-width:0;padding:0 1px;font-size:.72rem}
+.shot-folded{padding:0}
+.fold-line{display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;font-size:.82rem}
+.fold-line .shot-badge{flex:none}
+.fold-text{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fold-line .shot-sg{flex:none}
 /* v64 stats layout */
 .stats-grid{display:flex!important;flex-direction:column;gap:10px}
 .mu2{color:var(--tl);font-size:.72rem}
@@ -3028,7 +3041,7 @@ function addShot(isPenalty=false) {
     shot.approach = approachDefault(idx, si, defs.lie);
     shot._lieAuto = true; shot._clubAuto = true;
   }
-  shotData[idx].forEach(function(x){ if(x.holed) x.holed=false; });
+  shotData[idx].forEach(function(x){ if(x.holed) x.holed=false; delete x._open; delete x._more; });
   shotData[idx].push(shot);
   if (!isPenalty && si === 0) { try{ autoCapturePoint('tee', idx); }catch(e){} }
   else if (!isPenalty && shotData[idx].filter(function(x){ return (x.lie||'')!=='Penalty'; }).length === 2) { try{ autoCaptureBearing(idx); }catch(e){} }
@@ -3156,6 +3169,61 @@ function renderShots(idx) {
   try{ renderHoleHistory(idx); }catch(e){ console.error('history',e); }
 }
 
+// ── Shot entry: club and lie as buttons, finished shots folded into one line ──
+var CLUB_GROUPS = [['Woods','D,3W'],['Irons','2i,4i,5i,6i,7i,8i,9i'],['Wedges and putter','PW,GW,SW,LW,P']];
+function clubSuggestions(idx, shot){
+  if(isTournament()) return [];
+  var lie=shot.lie||'', h=activeHoles[idx];
+  if(lie==='Green') return [];
+  if(lie==='Tee' && h && (h.par||4)>=4) return ['D','3W','2i'].filter(function(c){ return CLUBS.indexOf(c)>=0; });
+  var d=shot.distance; if(d==null || isNaN(d)) return [];
+  var t=d; try{ var pl=holePlaysLike(d,null); if(pl) t=pl.playsLike; }catch(e){}
+  if(lie==='Rough' || lie==='Recovery') t*=1.10;
+  var c=[]; CLUBS.forEach(function(k){ if(k==='P'||k==='D') return; var e=getEffectiveDistance(k); if(e && e.dist>0) c.push({k:k, diff:Math.abs(e.dist-t)}); });
+  c.sort(function(a,b){ return a.diff-b.diff; });
+  return c.slice(0,3).map(function(x){ return x.k; });
+}
+function recentClubs(idx, si, exclude){
+  var out=[];
+  for(var hi=idx; hi>=0 && out.length<2; hi--){
+    var sh=shotData[hi]||[];
+    for(var i=(hi===idx?si-1:sh.length-1); i>=0 && out.length<2; i--){
+      var c=sh[i] && sh[i].club;
+      if(c && c!=='P' && !(c==='D' && ((shotData[idx][si]||{}).lie||'')!=='Tee') && exclude.indexOf(c)<0 && out.indexOf(c)<0) out.push(c);
+    }
+  }
+  return out;
+}
+function clubLieHtml(idx, si, shot){
+  var sug=clubSuggestions(idx,shot), shown=sug.slice();
+  recentClubs(idx,si,sug).forEach(function(c){ shown.push(c); });
+  if(shot.club && shown.indexOf(shot.club)<0) shown.push(shot.club);
+  var chip=function(c){ return '<button class="chipbtn'+(c===shot.club?' on':'')+(sug.indexOf(c)>=0&&c!==shot.club?' sug':'')+'" onclick="onClubChange('+idx+','+si+',\''+c+'\')">'+esc(c)+'</button>'; };
+  var h='<div class="sf"><label>Club'+(sug.length&&shot.distance!=null&&(shot.lie||'')!=='Tee'?' <span style="text-transform:none;letter-spacing:0;font-weight:400">· suggested for '+Math.round(shot.distance)+' m</span>':'')+'</label>'
+    +'<div class="chips">'+shown.map(chip).join('')+'<button class="chipbtn mo" onclick="toggleClubMore('+idx+','+si+')">'+(shot._more?'Less':'More')+'</button></div>';
+  if(shot._more){
+    h+=CLUB_GROUPS.map(function(g){ var cs=g[1].split(',').filter(function(c){ return CLUBS.indexOf(c)>=0; });
+      return '<div class="mu2" style="margin:8px 0 3px">'+g[0]+'</div><div class="chips">'+cs.map(chip).join('')+'</div>'; }).join('');
+  }
+  h+='</div>';
+  var lies=['Tee','Fairway','Rough','Bunker','Fringe','Green'];
+  h+='<div class="sf" style="margin-top:8px"><label>Lie</label><div class="lierow">'
+    +lies.map(function(l){ return '<button class="chipbtn lie'+(l===(shot.lie||'Tee')?' on':'')+'" onclick="onLieChange('+idx+','+si+',\''+l+'\')">'+l+'</button>'; }).join('')+'</div>'
+    +'<div style="margin-top:4px"><a href="#" class="mu2" style="color:var(--gl)" onclick="onLieChange('+idx+','+si+',\''+((shot.lie||'')==='Recovery'?'Fairway':'Recovery')+'\');return false">'+((shot.lie||'')==='Recovery'?'Recovery lie selected — tap to undo':'Recovery lie')+'</a></div></div>';
+  return h;
+}
+function toggleClubMore(idx, si){ var s=shotData[idx][si]; if(s){ s._more=!s._more; renderShots(idx); } }
+function toggleShotOpen(idx, si, open){ var s=shotData[idx][si]; if(s){ s._open=open; renderShots(idx); } }
+function shotSummaryText(shot){
+  var parts=['<b>'+esc(shot.club||'?')+'</b>'];
+  if(shot.distance!=null) parts.push(Math.round(shot.distance)+' m');
+  parts.push(esc(shot.lie||'Tee'));
+  if(shot.result) parts.push(esc(shot.result));
+  if(shot.direction && shot.direction!=='Center') parts.push(esc(shot.direction));
+  if(shot.vDir) parts.push(shot.vDir==='PinHigh'?'Pin high':esc(shot.vDir));
+  return parts.join(' · ');
+}
+
 function buildShotCard(idx, si, shot) {
   const card = document.createElement('div');
   card.className = 'shot-card';
@@ -3202,6 +3270,15 @@ function buildShotCard(idx, si, shot) {
     return card;
   }
 
+  if ((shot.lie || '') !== 'Green') {
+    var lastReal = -1; (shotData[idx] || []).forEach(function(x, i){ if ((x.lie || '') !== 'Penalty') lastReal = i; });
+    var open = shot._open !== undefined ? shot._open : (si === lastReal);
+    if (!open) {
+      card.className = 'shot-card shot-folded';
+      card.innerHTML = '<div class="fold-line" onclick="toggleShotOpen(' + idx + ',' + si + ',true)"><span class="shot-badge">' + (si + 1) + '</span><span class="fold-text">' + shotSummaryText(shot) + '</span>' + sgHtml + '<span class="mu2" style="margin-left:6px">&#9662;</span></div>';
+      return card;
+    }
+  }
   const co = CLUBS.map(function(c) {
     return '<option' + (c === shot.club ? ' selected' : '') + '>' + c + '</option>';
   }).join('');
@@ -3243,13 +3320,9 @@ function buildShotCard(idx, si, shot) {
       sgHtml +
     '</div>' +
     '<button class="rm-shot" onclick="removeShot(' + idx + ',' + si + ')">&#x2715;</button>' +
-    '<div class="shot-grid">' +
-      '<div class="sf"><label>Club</label>' +
-        '<select onchange="onClubChange(' + idx + ',' + si + ',this.value)">' + co + '</select>' +
-      '</div>' +
-      '<div class="sf"><label>Lie</label>' +
-        '<select onchange="updShot(' + idx + ',' + si + ',\'lie\',this.value);onLieChange(' + idx + ',' + si + ',this.value)">' + lo + '</select>' +
-      '</div>' +
+    ((shot._open === true && (shot._open !== undefined)) ? '<div style="text-align:right;margin:-2px 0 4px"><a href="#" class="mu2" style="color:var(--gl)" onclick="toggleShotOpen(' + idx + ',' + si + ',false);return false">Fold &#9652;</a></div>' : '') +
+    clubLieHtml(idx, si, shot) +
+    '<div class="shot-grid" style="margin-top:8px">' +
       '<div class="sf"><label>Distance to pin (m)</label>' +
         '<input type="number" id="dist-' + idx + '-' + si + '" value="' + (shot.distance || '') + '"' +
         ' placeholder="\u2014" min="0" max="400"' +
