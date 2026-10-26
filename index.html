@@ -2,7 +2,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
-<title>GolfCaddie AI v87</title>
+<title>GolfCaddie AI v89</title>
 
 <!-- PWA / Home Screen -->
 <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -857,12 +857,12 @@ select.finput{-webkit-appearance:none;appearance:none;background-image:url("data
           <input class="finput" type="password" id="nToken" placeholder="secret_ or ntn_…" style="margin-bottom:10px"/>
           <label class="flabel">Paste your Database ID here (32 characters)</label>
           <input class="finput" type="text" id="nDbId" placeholder="550e8400e29b41d4a716446655440000"/>
-          <label class="flabel" style="margin-top:10px">CORS proxy URL (advanced — optional)</label>
-          <input class="finput" type="text" id="nProxy" placeholder="https://corsproxy.io/?"/>
+          <label class="flabel" style="margin-top:10px">CORS proxy URL (needed — the free public proxy no longer works)</label>
+          <input class="finput" type="text" id="nProxy" placeholder="https://your-worker.your-name.workers.dev/?"/>
           <div style="font-size:.68rem;color:#e0a94b;margin-top:6px;line-height:1.5">
             ⚠️ Notion sync relays requests through this proxy, which can see your token and
-            round data in transit. Leave blank to use the public default, or host your own
-            (e.g. a Cloudflare Worker) and paste its URL here.
+            round data in transit. Host your own (a free Cloudflare Worker, see the
+            notion-proxy-worker.js file) and paste its URL here, ending in /?
           </div>
         </div>
       </div>
@@ -886,7 +886,8 @@ select.finput{-webkit-appearance:none;appearance:none;background-image:url("data
         <div id="notionErrorBadge" style="display:none;text-align:center;padding:16px 0 8px">
           <div style="font-size:2.5rem">❌</div>
           <div style="font-family:Playfair Display,serif;font-size:1rem;color:#e74c3c;margin-top:6px">Connection failed</div>
-          <div style="font-size:.78rem;color:var(--tl);margin-top:4px">Check your token and Database ID are correct, and that you connected the integration to the database (Step 2, point 5).</div>
+          <div id="notionErrorDetail" style="font-size:.8rem;color:#e8c872;margin-top:6px;line-height:1.4"></div>
+          <div style="font-size:.78rem;color:var(--tl);margin-top:4px">Check your token and Database ID are correct, that you connected the integration to the database (Step 2, point 5), and that the proxy URL works.</div>
           <button class="btn btn-ghost btn-sm" onclick="showNotionStep(3)" style="margin-top:10px">← Go back and fix</button>
         </div>
 
@@ -5945,6 +5946,8 @@ async function nFetch(path,method,body){
   if(!r.ok){
     let msg=text;
     try{ const j=JSON.parse(text); msg=j.message||j.code||text; }catch(e){}
+    if(r.status===403 && /keyless_legacy_url|legacy proxy/i.test(text))
+      throw new Error('The free public proxy no longer works. Put your own proxy URL in the proxy field (a free Cloudflare Worker, see the notion-proxy-worker.js file).');
     throw new Error('Notion error ('+r.status+'): '+msg);
   }
   try{ return JSON.parse(text); }
@@ -6096,6 +6099,7 @@ async function saveAndTestNotion(){
     toast('✓ Notion connected!','ok');
   }catch(e){
     document.getElementById('notionErrorBadge').style.display='block';
+    var ed=document.getElementById('notionErrorDetail'); if(ed) ed.textContent=(e&&e.message)?e.message:'Unknown error';
     // Don't wipe the saved config — user can retry
   }
 }
@@ -7158,7 +7162,7 @@ function autoFillShot(idx, si){
     var here={lat:p.coords.latitude,lng:p.coords.longitude};
     var s2=(shotData[idx]||[])[si]; if(!s2) return;
     s2.pos={ lat:Math.round(here.lat*1e6)/1e6, lng:Math.round(here.lng*1e6)/1e6, acc:Math.round(p.coords.accuracy||0) };
-    if(firstPutt){ updateMeasFor(idx, si); return; }
+    if(firstPutt){ updateMeasFor(idx, si); greenFromFirstPutt(idx, si); return; }
     var d=tgt?Math.round(haversine(here,tgt)):null;
     if(si===0){
       if(d!=null && h.metres && Math.abs(d-h.metres)>Math.max(40,h.metres*0.25)) s2.pos.bad=true;   // not standing on the tee
@@ -7201,16 +7205,52 @@ function updateMeasFor(idx, si){
   if(idx===currentHole) renderShots(idx);
 }
 
+// Green centre from GPS. quality: 'cup' (where you stood at the hole) beats 'putt' (where the first putt lay).
+// A hand-calibrated green is never touched; later rounds are averaged, up to 8.
+function saveGreenPoint(key, pt, quality){
+  var o=loadGreens(), rec=o[key]||{};
+  var has=!!(rec.c||rec.f||rec.b);
+  if(has && !rec.auto) return null;
+  var rq=rec.cQ||(rec.c?'cup':null);
+  if(rec.c){
+    if(haversine(rec.c,pt)>60) return null;                       // wrong hole or a stray fix
+    if(rq==='cup' && quality==='putt') return null;              // keep the better source
+    if(rq==='putt' && quality==='cup'){ rec.c=pt; rec.cN=1; }
+    else { var n=rec.cN||1; if(n>=8) return null; rec.c={ lat:(rec.c.lat*n+pt.lat)/(n+1), lng:(rec.c.lng*n+pt.lng)/(n+1) }; rec.cN=n+1; }
+  } else if(has){ return null; }
+  else { rec.c=pt; rec.cN=1; }
+  rec.cQ=(rq==='cup'&&quality==='putt')?'cup':quality; rec.auto=true; rec.ts=Date.now();
+  o[key]=rec; saveGreensObj(o); return rec;
+}
+// The first putt is tapped at the ball, on the green: good enough to remember the green even if
+// you walk off before the last putt is logged.
+function greenFromFirstPutt(idx, si){
+  var sh=(shotData[idx]||[])[si], h=activeHoles[idx]; if(!sh||!sh.pos||sh.pos.bad) return;
+  var key=greenKeyFor(idx), g=loadGreens()[key]||{}, pt={lat:sh.pos.lat,lng:sh.pos.lng};
+  if(g.c){ if(haversine(g.c,pt)>35){ sh.pos.bad=true; return; } }
+  else if(g.tee && h && h.metres){ var d=haversine(g.tee,pt); if(d<h.metres*0.5 || d>h.metres+60){ sh.pos.bad=true; return; } }
+  var rec=saveGreenPoint(key,pt,'putt');
+  if(rec){ try{ toast('\ud83d\udccd Green saved from your first putt','inf'); }catch(e){} elevForHole(key,idx); }
+}
+
 function autoCapturePoint(kind, holeIdx){
   var key=greenKeyFor(holeIdx);
   var g0=loadGreens()[key]||{};
   if(kind==='tee' && g0.tee && !g0.teeAuto) return;
   if(kind==='green' && (g0.c||g0.f||g0.b) && !g0.auto) return;
-  if((kind==='tee' && (g0.teeN||0)>=8) || (kind==='green' && (g0.cN||0)>=8)) return;
+  if((kind==='tee' && (g0.teeN||0)>=8) || (kind==='green' && g0.cQ==='cup' && (g0.cN||0)>=8)) return;
   if(!navigator.geolocation) return;
   getBestPos(8000,6).then(function(p){
     if((p.coords.accuracy||99)>20) return;
     var pt={lat:p.coords.latitude,lng:p.coords.longitude};
+    if(kind==='green'){
+      // you may have walked off the green: only trust this spot if it is near where the first putt lay
+      var fp=(shotData[holeIdx]||[]).find(function(x){ return (x.lie||'')==='Green' && x.pos && !x.pos.bad; });
+      if(fp && haversine(fp.pos,pt)>25) return;
+      var gr=saveGreenPoint(key,pt,'cup');
+      if(gr){ try{ toast('\ud83d\udccd Green saved (\u00b1'+Math.round(p.coords.accuracy||0)+' m)'+(gr.cN>1?' \u00b7 avg of '+gr.cN:''),'inf'); }catch(e){} return elevForHole(key,holeIdx); }
+      return;
+    }
     var o=loadGreens(), rec=o[key]||{};
     var field = kind==='tee' ? 'tee' : 'c', nKey = kind==='tee' ? 'teeN' : 'cN', autoKey = kind==='tee' ? 'teeAuto' : 'auto';
     if(rec[field] && !rec[autoKey]) return;
