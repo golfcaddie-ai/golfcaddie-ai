@@ -2,7 +2,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
-<title>GolfCaddie AI v92</title>
+<title>GolfCaddie AI v93</title>
 
 <!-- PWA / Home Screen -->
 <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -1230,6 +1230,15 @@ const TEE_COLORS = {Black:'#555',Blue:'#2980b9',White:'#d5d8dc',Yellow:'#d4ac0d'
 // STATE
 // ══════════════════════════════════════════════
 let rounds      = JSON.parse(localStorage.getItem('gcai_rounds')||'[]');
+// Guarded rounds save: a full browser storage must never lose a round silently.
+// On failure the rounds stay in memory and the backup/export can still capture them.
+function saveRounds(){
+  try{ localStorage.setItem('gcai_rounds',JSON.stringify(rounds)); return true; }
+  catch(e){
+    try{ toast('\u26a0\ufe0f Could not save — browser storage is full. Your round is still in memory: back up now (Settings \u2192 Backup) before closing the app, then free space.','err'); }catch(_){}
+    return false;
+  }
+}
 // One-off clean slate (v55): saved course templates and green calibrations are cleared once.
 // Played rounds are stored separately and are not touched.
 try{ if(!localStorage.getItem('gcai_wipe_v55')){ localStorage.removeItem('gcai_courses'); localStorage.removeItem('gcai_greens'); localStorage.setItem('gcai_wipe_v55','1'); } }catch(e){}
@@ -2724,7 +2733,8 @@ function saveCourseTemplate(name, holes, tee, meta) {
   };
   courses[name].activeTee = tee;
 
-  localStorage.setItem('gcai_courses', JSON.stringify(courses));
+  try{ localStorage.setItem('gcai_courses', JSON.stringify(courses)); }
+  catch(e){ toast('\u26a0\ufe0f Course could not be saved — browser storage is full. Back up (Settings \u2192 Backup), then free space.','err'); }
   populateCourseList();
 }
 
@@ -2825,7 +2835,8 @@ function getCourseTees(name) {
 function deleteCourse(name) {
   delete courses[name];
   delete courses[name + '_meta'];
-  localStorage.setItem('gcai_courses', JSON.stringify(courses));
+  try{ localStorage.setItem('gcai_courses', JSON.stringify(courses)); }
+  catch(e){ toast('\u26a0\ufe0f Course could not be saved — browser storage is full. Back up (Settings \u2192 Backup), then free space.','err'); }
   populateCourseList();
   renderCourseManager();
   toast('"' + name + '" deleted', 'inf');
@@ -3723,7 +3734,7 @@ function finishRound() {
   if(players.length) round.players=players;
   if(activeConditions.tempC!=null||activeConditions.altM!=null||activeConditions.pressureHpa!=null) round.conditions={tempC:activeConditions.tempC,pressureHpa:activeConditions.pressureHpa,altM:activeConditions.altM,windFromDeg:activeConditions.windFromDeg};
   rounds.unshift(round);
-  localStorage.setItem('gcai_rounds',JSON.stringify(rounds));
+  saveRounds();
   try{ renderBackupBanner(); }catch(e){}
   clearDraft();
   saveCourseTemplate(course, activeHoles, selectedTee, null);
@@ -3774,7 +3785,7 @@ function importRoundsJSON() {
           if (!existing.has(r.id)) { rounds.push(r); added++; }
         });
         rounds.sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
-        localStorage.setItem('gcai_rounds', JSON.stringify(rounds));
+        saveRounds();
         renderRounds(); renderStats();
         toast('Imported ' + added + ' rounds!', 'ok');
       } catch(e) { toast('Import failed: ' + e.message, 'err'); }
@@ -3797,7 +3808,7 @@ function confirmDeleteRound(ref) {
     const i = roundIdx(ref);
     if (i < 0) return;
     rounds.splice(i, 1);
-    localStorage.setItem('gcai_rounds', JSON.stringify(rounds));
+    saveRounds();
     renderRounds();
     renderStats();
     toast('Round deleted', 'inf');
@@ -3859,7 +3870,7 @@ function saveEditedRound(){
   });
   r.score=r.holes.reduce(function(sum,h){return sum+(h.score||0);},0);
   r.par=r.holes.reduce(function(sum,h){return sum+(h.par||4);},0);
-  localStorage.setItem('gcai_rounds',JSON.stringify(rounds));
+  saveRounds();
   renderRounds(); renderStats();
 }
 function editDeleteShot(ri,hi,si){
@@ -5146,7 +5157,7 @@ function linkRoundsTo(i){
   var to=(document.getElementById('lnk_'+i)||{}).value;
   if(!to){ toast('Pick a course first','err'); return; }
   var n=_applyLink(u.name,to);
-  localStorage.setItem('gcai_rounds',JSON.stringify(rounds));
+  saveRounds();
   toast(n+' round'+(n!==1?'s':'')+' linked to '+to,'ok'); renderCourseManager();
   try{ renderRounds(); }catch(e){}
 }
@@ -5157,7 +5168,7 @@ function linkAllSuggested(){
     if(to) tot+=_applyLink(u.name,to);
   });
   if(!tot){ toast('No suggested matches to apply','inf'); return; }
-  localStorage.setItem('gcai_rounds',JSON.stringify(rounds));
+  saveRounds();
   toast(tot+' round'+(tot!==1?'s':'')+' linked','ok'); renderCourseManager();
   try{ renderRounds(); }catch(e){}
 }
@@ -6598,6 +6609,11 @@ async function testNotion(){
   }
 }
 
+var _notionDbCache=null;
+function notionDbSchema(){
+  if(_notionDbCache) return Promise.resolve(_notionDbCache);
+  return nGet('/databases/'+notionCfg.dbId).then(function(db){ _notionDbCache=db; return db; });
+}
 async function saveRoundToNotion(round, silent=false){
   if(!notionCfg) return;
   try{
@@ -6621,36 +6637,71 @@ async function saveRoundToNotion(round, silent=false){
     }).length;
     const notes = round.weather||'';
 
-    // Build props matching your exact Notion database property names
-    const base={
-      'Round':         {title:[{text:{content:round.course+' - '+round.date}}]},
-      'Course':        {rich_text:[{text:{content:round.course||''}}]},
-      'Date':          {date:{start:round.date}},
-      'Score':         {number:round.score||0},
-      'Par':           {number:round.par||72},
-      'Holes':         {number:holesArr.length},
-      'Putts':         {number:putts},
-      'Tee':           {select:{name:round.tee||'Blue'}},
-      'Weather':       {select:{name:round.weather||'Sunny'}},
-      'Round Type':    {select:{name:round.roundType||'Casual'}},
-      'GIR (hit)':     {rich_text:[{text:{content:girCount+'/'+holesArr.length}}]},
-      'Fairways (hit)':{rich_text:[{text:{content:fwHit+'/'+fwHoles.length}}]},
-      'Notes':         {rich_text:[{text:{content:notes}}]}
+    // Desired properties, with the spec needed to auto-create any that are
+    // missing from the database. A plain new database (title only) used to make
+    // every sync fail; now the app adds what it needs first.
+    const PROP_SPECS={
+      'Course':        {rich_text:{}},
+      'Date':          {date:{}},
+      'Score':         {number:{format:'number'}},
+      'Par':           {number:{format:'number'}},
+      'Holes':         {number:{format:'number'}},
+      'Putts':         {number:{format:'number'}},
+      'Tee':           {select:{options:[]}},
+      'Weather':       {select:{options:[]}},
+      'Round Type':    {select:{options:[]}},
+      'GIR (hit)':     {rich_text:{}},
+      'Fairways (hit)':{rich_text:{}},
+      'Notes':         {rich_text:{}},
+      'Handicap':      {number:{format:'number'}},
+      'Round ID':      {rich_text:{}}
     };
+    // Fetch the database once per session and add any missing properties.
+    const db=await notionDbSchema();
+    const titleProp=Object.keys(db.properties||{}).find(function(k){ return db.properties[k] && db.properties[k].type==='title'; }) || 'Round';
+    const missing=Object.keys(PROP_SPECS).filter(function(k){ return !(db.properties||{})[k]; });
+    if(missing.length){
+      const add={}; missing.forEach(function(k){ add[k]=PROP_SPECS[k]; });
+      await nPatch('/databases/'+notionCfg.dbId,{properties:add});
+      db.properties=db.properties||{}; missing.forEach(function(k){ db.properties[k]={type:Object.keys(PROP_SPECS[k])[0]}; });
+    }
+
+    // Build props using the database's real title property name
+    const base={};
+    base[titleProp]=   {title:[{text:{content:round.course+' - '+round.date}}]};
+    base['Course']=        {rich_text:[{text:{content:round.course||''}}]};
+    base['Date']=          {date:{start:round.date}};
+    base['Score']=         {number:round.score||0};
+    base['Par']=           {number:round.par||72};
+    base['Holes']=         {number:holesArr.length};
+    base['Putts']=         {number:putts};
+    base['Tee']=           {select:{name:round.tee||'Blue'}};
+    base['Weather']=       {select:{name:round.weather||'Sunny'}};
+    base['Round Type']=    {select:{name:round.roundType||'Casual'}};
+    base['GIR (hit)']=     {rich_text:[{text:{content:girCount+'/'+holesArr.length}}]};
+    base['Fairways (hit)']={rich_text:[{text:{content:fwHit+'/'+fwHoles.length}}]};
+    base['Notes']=         {rich_text:[{text:{content:notes}}]};
+    base['Round ID']=      {rich_text:[{text:{content:String(round.id)}}]};
     if(round.playingHcp!=null) base['Handicap']={number:round.playingHcp};
 
-    // Try with Round ID first; fallback without if property doesn't exist
-    const doCreate=async function(props){
-      return nPost('/pages',{
-        parent:{database_id:notionCfg.dbId},properties:props,children:roundToBlocks(round)
-      });
-    };
-    try{
-      await doCreate(Object.assign({'Round ID':{rich_text:[{text:{content:String(round.id)}}]}},base));
-    }catch(e1){
-      if(e1.message&&e1.message.includes('Round ID')) await doCreate(base);
-      else throw e1;
+    // Create the page; if Notion still rejects one property (type mismatch etc.),
+    // drop just that property and retry, so one bad field never blocks the round.
+    let props=Object.assign({},base), created=false, lastErr=null;
+    for(let attempt=0; attempt<8 && !created; attempt++){
+      try{
+        await nPost('/pages',{
+          parent:{database_id:notionCfg.dbId},properties:props,children:roundToBlocks(round)
+        });
+        created=true;
+      }catch(e1){
+        lastErr=e1;
+        const m=e1 && e1.message && e1.message.match(/"([^"]+)" is not a property that exists|([A-Za-z ()]+) is not a property that exists/);
+        const bad=m ? (m[1]||m[2]||'').trim() : '';
+        if(bad && props[bad]!=null && attempt<7){ delete props[bad]; continue; }
+        throw e1;
+      }
     }
+    if(!created) throw (lastErr||new Error('Could not create the Notion page'));
     if(!silent) toast('Round saved to Notion','ok');
   }catch(e){
     console.error('Notion save:',e);
@@ -6669,7 +6720,7 @@ async function exportAll(){
   document.getElementById('expBtn').disabled=true;
 
   // Build a set of Round IDs already present so re-running doesn't duplicate pages
-  let existing=new Set();
+  let existing=new Set(), existingTitles=new Set();
   try{
     let cursor=undefined, guard=0;
     do{
@@ -6679,6 +6730,9 @@ async function exportAll(){
         const rid=pg.properties && pg.properties['Round ID'] && pg.properties['Round ID'].rich_text
           && pg.properties['Round ID'].rich_text[0] && pg.properties['Round ID'].rich_text[0].plain_text;
         if(rid) existing.add(String(rid));
+        const props=pg.properties||{}, tk=Object.keys(props).find(function(k){ return props[k] && props[k].type==='title'; });
+        const tt=tk && props[tk].title && props[tk].title[0] && props[tk].title[0].plain_text;
+        if(tt) existingTitles.add(tt);
       });
       cursor=resp.has_more?resp.next_cursor:undefined;
     }while(cursor && ++guard<20);
@@ -6686,7 +6740,7 @@ async function exportAll(){
 
   let ok=0, fail=0, skip=0, lastErr='';
   for(const r of rounds){
-    if(existing.has(String(r.id))){ skip++; s.textContent=(ok+skip)+'/'+rounds.length+' processed…'; continue; }
+    if(existing.has(String(r.id))||existingTitles.has(r.course+' - '+r.date)){ skip++; s.textContent=(ok+skip)+'/'+rounds.length+' processed…'; continue; }
     try{
       await saveRoundToNotion(r,true);
       ok++;
@@ -6797,7 +6851,7 @@ async function importFromNotion(){
     }
 
     rounds.sort((a,b)=>new Date(b.date)-new Date(a.date));
-    localStorage.setItem('gcai_rounds',JSON.stringify(rounds));
+    saveRounds();
     renderRounds(); renderStats();
     s.textContent='✓ '+added+' round'+(added!==1?'s':'')+' imported'+(skipped?', '+skipped+' already existed':'');
     toast('Imported '+added+' round'+(added!==1?'s':''),'ok');
@@ -6945,7 +6999,7 @@ function haversine(a,b){
   return 2*R*Math.asin(Math.sqrt(s));
 }
 function loadGreens(){ try{ return JSON.parse(localStorage.getItem('gcai_greens')||'{}'); }catch(e){ return {}; } }
-function saveGreensObj(o){ try{ localStorage.setItem('gcai_greens',JSON.stringify(o)); }catch(e){} }
+function saveGreensObj(o){ try{ localStorage.setItem('gcai_greens',JSON.stringify(o)); }catch(e){ toast('\u26a0\ufe0f Green position could not be saved — browser storage is full. Back up (Settings \u2192 Backup), then free space.','err'); } }
 function greenKey(){
   var c=((document.getElementById('courseInput')||{}).value||'').trim();
   var h=activeHoles[currentHole];
@@ -7865,3 +7919,4 @@ function fmtDate(d){
 </script>
 </body>
 </html>
+
