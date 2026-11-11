@@ -2,7 +2,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
-<title>GolfCaddie AI v91</title>
+<title>GolfCaddie AI v92</title>
 
 <!-- PWA / Home Screen -->
 <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -1329,7 +1329,7 @@ function loadDraft(){
 // ══════════════════════════════════════════════
 // BACKUP & RESTORE (everything) + offline mode
 // ══════════════════════════════════════════════
-var BACKUP_SKIP = { gcai_anthropic_key:1, gcai_notion:1, gcai_rapidkey:1, gcai_draft:1, gcai_backup_meta:1, gcai_backup_snooze:1 };
+var BACKUP_SKIP = { gcai_anthropic_key:1, gcai_notion:1, gcai_rapidkey:1, gcai_draft:1, gcai_backup_meta:1, gcai_backup_snooze:1, gcai_wipe_v55:1, gcai_offline_told:1 };
 function buildBackup(){
   var data={};
   for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k.indexOf('gcai_')===0 && !BACKUP_SKIP[k]) data[k]=localStorage.getItem(k); }
