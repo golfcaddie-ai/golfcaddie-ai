@@ -2,7 +2,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
-<title>GolfCaddie AI v95</title>
+<title>GolfCaddie AI v96</title>
 
 <!-- PWA / Home Screen -->
 <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -991,7 +991,7 @@ select.finput{-webkit-appearance:none;appearance:none;background-image:url("data
       <h3>Completed rounds in Calendar</h3>
       <p>Connect once from MyDay Sports. Only new saved rounds are sent, with played date and start/finish times. No course names, scores, partners or GPS. Past rounds are not backfilled.</p>
       <p id="golfCalendarStatus" role="status"></p>
-      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-ghost btn-sm" onclick="GolfCalendar.check()">Check connection</button><button class="btn btn-ghost btn-sm" onclick="GolfCalendar.flush()">Retry pending</button></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-ghost btn-sm" id="golfCalendarCheckButton" onclick="GolfCalendar.check()">Check connection</button><button class="btn btn-ghost btn-sm" onclick="GolfCalendar.flush()">Retry pending</button></div>
       <div id="golfCalendarReview"></div>
     </div>
 
@@ -7965,9 +7965,16 @@ const GolfCalendar=(()=>{
    const pending=queue();show(pending.length?pending.length+' round(s) need Calendar review or sync.':'Calendar is up to date.');
   }catch(e){show('Calendar pending: '+e.message+'. Saved rounds stay on this device.');}finally{busy=false}
  }
+ let checking=false;
  async function check(){
+  if(checking)return;
   if(!config().key){show('Not connected. Connect Golf from MyDay Sports.');return}
-  try{const r=await fetch(BASE+'/api/golf/status',{headers:{'X-App-Key':config().key}}),d=await r.json();if(!r.ok||d.connected!==true)throw Error(d.error||'Calendar check failed');show('Google Calendar read access verified. The next real saved round confirms write access.');}catch(e){show('Connection not verified: '+e.message);}
+  checking=true;const button=document.getElementById('golfCalendarCheckButton'),controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
+  if(button){button.disabled=true;button.textContent='Checking…';button.setAttribute('aria-busy','true')}
+  show('Checking Google Calendar access…');
+  try{const r=await fetch(BASE+'/api/golf/status',{headers:{'X-App-Key':config().key},signal:controller.signal}),d=await r.json();if(!r.ok||d.connected!==true)throw Error(d.error||'Calendar check failed');show('Google Calendar read access verified at '+new Date().toLocaleTimeString('en-GB',{timeZone:'Europe/Madrid',hour:'2-digit',minute:'2-digit',second:'2-digit'})+' (Madrid). The next real saved round confirms write access.');}
+  catch(e){show('Connection not verified: '+(e.name==='AbortError'?'check timed out. Check your connection and try again':e.message)+'. Saved rounds and your connection settings were kept.');}
+  finally{clearTimeout(timer);checking=false;if(button){button.disabled=false;button.textContent='Check connection';button.removeAttribute('aria-busy')}}
  }
  async function receive(input=location.href){
   const u=new URL(input);if(u.origin!==location.origin||!u.pathname.startsWith('/golfcaddie-ai/'))return;
