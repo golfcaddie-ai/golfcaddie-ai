@@ -2,7 +2,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
-<title>GolfCaddie AI v93</title>
+<title>GolfCaddie AI v94</title>
 
 <!-- PWA / Home Screen -->
 <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -6686,7 +6686,7 @@ async function saveRoundToNotion(round, silent=false){
 
     // Create the page; if Notion still rejects one property (type mismatch etc.),
     // drop just that property and retry, so one bad field never blocks the round.
-    let props=Object.assign({},base), created=false, lastErr=null;
+    let props=Object.assign({},base), created=false, lastErr=null, dropped=[];
     for(let attempt=0; attempt<8 && !created; attempt++){
       try{
         await nPost('/pages',{
@@ -6697,12 +6697,16 @@ async function saveRoundToNotion(round, silent=false){
         lastErr=e1;
         const m=e1 && e1.message && e1.message.match(/"([^"]+)" is not a property that exists|([A-Za-z ()]+) is not a property that exists/);
         const bad=m ? (m[1]||m[2]||'').trim() : '';
-        if(bad && props[bad]!=null && attempt<7){ delete props[bad]; continue; }
+        if(bad && props[bad]!=null && attempt<7){ dropped.push(bad); delete props[bad]; continue; }
         throw e1;
       }
     }
     if(!created) throw (lastErr||new Error('Could not create the Notion page'));
-    if(!silent) toast('Round saved to Notion','ok');
+    // Everything is still complete in the app and in the page's JSON block;
+    // but if Notion dropped a field, say so instead of claiming a perfect save.
+    if(dropped.length && !silent) toast('Round saved to Notion, but without: '+dropped.join(', ')+'. Nothing lost - it stays in the app, the backup and the page\u2019s data block.','err');
+    else if(!silent) toast('Round saved to Notion','ok');
+    return dropped;
   }catch(e){
     console.error('Notion save:',e);
     const errMsg = e.message && e.message.length < 120 ? e.message : 'Check console for details';
@@ -6738,12 +6742,13 @@ async function exportAll(){
     }while(cursor && ++guard<20);
   }catch(e){ console.warn('Could not pre-check Notion for duplicates:',e.message); }
 
-  let ok=0, fail=0, skip=0, lastErr='';
+  let ok=0, fail=0, skip=0, lastErr='', droppedFields=[];
   for(const r of rounds){
     if(existing.has(String(r.id))||existingTitles.has(r.course+' - '+r.date)){ skip++; s.textContent=(ok+skip)+'/'+rounds.length+' processed…'; continue; }
     try{
-      await saveRoundToNotion(r,true);
+      const dr=await saveRoundToNotion(r,true);
       ok++;
+      if(dr&&dr.length) droppedFields.push(...dr);
     }catch(e){
       fail++;
       lastErr=e.message;
@@ -6751,12 +6756,13 @@ async function exportAll(){
     }
     s.textContent=(ok+skip)+'/'+rounds.length+' processed…';
   }
+  var dropNote=droppedFields.length?' · saved without: '+[...new Set(droppedFields)].join(', ')+' (still in the app and backup)':'';
   if(fail>0){
-    s.textContent='Done: '+ok+' added, '+skip+' already there, '+fail+' failed. Last error: '+lastErr;
+    s.textContent='Done: '+ok+' added, '+skip+' already there, '+fail+' failed. Last error: '+lastErr+dropNote;
     s.style.color='#e74c3c';
   } else {
-    s.textContent='✓ Done: '+ok+' added'+(skip?', '+skip+' already in Notion':'')+'.';
-    s.style.color='var(--gl)';
+    s.textContent='✓ Done: '+ok+' added'+(skip?', '+skip+' already in Notion':'')+'.'+dropNote;
+    s.style.color=droppedFields.length?'#e0a94b':'var(--gl)';
     toast('Exported '+ok+' new round'+(ok!==1?'s':''),'ok');
   }
   document.getElementById('expBtn').disabled=false;
