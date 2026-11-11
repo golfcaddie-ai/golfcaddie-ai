@@ -2,7 +2,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
-<title>GolfCaddie AI v94</title>
+<title>GolfCaddie AI v95</title>
 
 <!-- PWA / Home Screen -->
 <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -987,6 +987,14 @@ select.finput{-webkit-appearance:none;appearance:none;background-image:url("data
       </div>
     </div>
 
+    <div class="modal-sec" id="golfCalendarPanel">
+      <h3>Completed rounds in Calendar</h3>
+      <p>Connect once from MyDay Sports. Only new saved rounds are sent, with played date and start/finish times. No course names, scores, partners or GPS. Past rounds are not backfilled.</p>
+      <p id="golfCalendarStatus" role="status"></p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-ghost btn-sm" onclick="GolfCalendar.check()">Check connection</button><button class="btn btn-ghost btn-sm" onclick="GolfCalendar.flush()">Retry pending</button></div>
+      <div id="golfCalendarReview"></div>
+    </div>
+
     <!-- Hidden RapidAPI fields kept for legacy, shown collapsed -->
     <div style="display:none">
       <input id="rapidKeyInput" type="password"/>
@@ -1338,7 +1346,7 @@ function loadDraft(){
 // ══════════════════════════════════════════════
 // BACKUP & RESTORE (everything) + offline mode
 // ══════════════════════════════════════════════
-var BACKUP_SKIP = { gcai_anthropic_key:1, gcai_notion:1, gcai_rapidkey:1, gcai_draft:1, gcai_backup_meta:1, gcai_backup_snooze:1, gcai_wipe_v55:1, gcai_offline_told:1 };
+var BACKUP_SKIP = { gcai_calendar_config:1, gcai_anthropic_key:1, gcai_notion:1, gcai_rapidkey:1, gcai_draft:1, gcai_backup_meta:1, gcai_backup_snooze:1, gcai_wipe_v55:1, gcai_offline_told:1 };
 function buildBackup(){
   var data={};
   for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k.indexOf('gcai_')===0 && !BACKUP_SKIP[k]) data[k]=localStorage.getItem(k); }
@@ -3734,7 +3742,8 @@ function finishRound() {
   if(players.length) round.players=players;
   if(activeConditions.tempC!=null||activeConditions.altM!=null||activeConditions.pressureHpa!=null) round.conditions={tempC:activeConditions.tempC,pressureHpa:activeConditions.pressureHpa,altM:activeConditions.altM,windFromDeg:activeConditions.windFromDeg};
   rounds.unshift(round);
-  saveRounds();
+  const _roundSaved=saveRounds();
+  if(_roundSaved){ try{ GolfCalendar.enqueue({id:round.id,date:round.date,savedAt:round.savedAt,startedAt:round.startedAt,durationMin:round.durationMin}); }catch(e){ toast('Round saved. Calendar sync is pending; check Settings.','inf'); } }
   try{ renderBackupBanner(); }catch(e){}
   clearDraft();
   saveCourseTemplate(course, activeHoles, selectedTee, null);
@@ -6527,6 +6536,7 @@ function closeSettings(){document.getElementById('settingsOverlay').style.displa
 function closeSettingsOut(e){if(e.target.id==='settingsOverlay')closeSettings();}
 
 function refreshSettingsUI(){
+  if(typeof GolfCalendar!=='undefined')GolfCalendar.refresh();
   // RapidAPI key status
   const k=getRapidKey();
   const inp=document.getElementById('rapidKeyInput');
@@ -7922,6 +7932,90 @@ function fmtDate(d){
 }
 </script>
 <script>
+</script>
+<script>
+// Prepared only. Separate calendar queue, no historical scan or backup/Notion changes.
+const GolfCalendar=(()=>{
+ const BASE='https://calorie-tracker.matthias-homan.workers.dev';
+ const CONFIG='gcai_calendar_config',QUEUE='gcai_calendar_queue',STATUS='gcai_calendar_status';let busy=false,pairing=false;
+ const read=(k,f)=>{try{return JSON.parse(localStorage.getItem(k)||'null')||f}catch{return f}};
+ const queue=()=>read(QUEUE,[]),config=()=>read(CONFIG,{});
+ const day=iso=>new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Madrid',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(iso));
+ function show(text){try{localStorage.setItem(STATUS,JSON.stringify({text,at:Date.now()}))}catch{};const el=document.getElementById('golfCalendarStatus');if(el)el.textContent=text;renderReview();}
+ function enqueue(round){
+  // Caller must invoke only after the guarded local round save succeeds.
+  const start=Date.parse(round.startedAt||''),end=Date.parse(round.savedAt||'');
+  if(!round.id||!/^\d{4}-\d{2}-\d{2}$/.test(round.date||''))return;
+  const review=!Number.isFinite(start)||!Number.isFinite(end)||end<=start||end-start>24*3600e3||day(round.startedAt)!==round.date||day(round.savedAt)!==round.date;
+  const item={source:'golf',sourceId:String(round.id),date:round.date,start:round.startedAt||null,end:round.savedAt||null,...(review?{needsTimeReview:true}:{})};
+  const q=queue();if(q.some(x=>x.sourceId===item.sourceId))return;
+  try{localStorage.setItem(QUEUE,JSON.stringify([...q,item]));show(review?'Round saved. Calendar needs the played start/finish times before syncing.':'Round saved. Calendar sync pending.');flush()}catch{show('Round saved, but Calendar queue could not be stored. Back up the round before closing.');}
+ }
+ async function flush(){
+  if(busy)return;const c=config();if(!c.key||!queue().length)return;busy=true;
+  try{
+   for(const item of queue()){
+    if(item.needsTimeReview||item.candidates?.length)continue;
+    const res=await fetch(BASE+'/api/golf/complete',{method:'POST',headers:{'Content-Type':'application/json','X-App-Key':c.key},body:JSON.stringify(item)}),data=await res.json();
+    if(!res.ok)throw Error(data.error||'Calendar save not confirmed');
+    if(data.needsReview){localStorage.setItem(QUEUE,JSON.stringify(queue().map(x=>x.sourceId===item.sourceId?{...x,candidates:data.candidates}:x)));continue;}
+    if(!data.event?.id&&!data.canceled)throw Error('Calendar did not confirm the round');
+    localStorage.setItem(QUEUE,JSON.stringify(queue().filter(x=>x.sourceId!==item.sourceId)));
+   }
+   const pending=queue();show(pending.length?pending.length+' round(s) need Calendar review or sync.':'Calendar is up to date.');
+  }catch(e){show('Calendar pending: '+e.message+'. Saved rounds stay on this device.');}finally{busy=false}
+ }
+ async function check(){
+  if(!config().key){show('Not connected. Connect Golf from MyDay Sports.');return}
+  try{const r=await fetch(BASE+'/api/golf/status',{headers:{'X-App-Key':config().key}}),d=await r.json();if(!r.ok||d.connected!==true)throw Error(d.error||'Calendar check failed');show('Google Calendar read access verified. The next real saved round confirms write access.');}catch(e){show('Connection not verified: '+e.message);}
+ }
+ async function receive(input=location.href){
+  const u=new URL(input);if(u.origin!==location.origin||!u.pathname.startsWith('/golfcaddie-ai/'))return;
+  const hash=new URLSearchParams(u.hash.slice(1)),pair=hash.get('golfPair');if(!pair||pairing)return;pairing=true;hash.delete('golfPair');u.hash=hash.toString();history.replaceState(null,'',u.toString());
+  try{const r=await fetch(BASE+'/api/golf/redeem',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pair})}),d=await r.json();if(!r.ok)throw Error(d.error||'Connection transfer failed');if(typeof d.key!=='string'||!d.key.startsWith('golf2.')||d.scope!=='golf-completion')throw Error('Invalid Golf connection');localStorage.setItem(CONFIG,JSON.stringify({key:d.key,scope:d.scope,expiresAt:d.expiresAt}));openSettings();await check();document.getElementById('golfCalendarPanel')?.scrollIntoView({block:'start'});flush();}catch(e){show('Connection not received: '+e.message+'. Existing rounds and any previous connection were kept.');}finally{pairing=false}
+ }
+
+ function node(tag,text,parent){const e=document.createElement(tag);if(text)e.textContent=text;if(parent)parent.append(e);return e}
+ function madridTime(date,time){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!/^\d{2}:\d{2}$/.test(time))throw Error('Enter played date, start and finish.');
+  const base=Date.parse(date+'T'+time+':00Z'),f=new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Madrid',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+  const matches=[60,120].map(offset=>new Date(base-offset*60000)).filter(d=>Number.isFinite(d.getTime())&&f.format(d)===date+' '+time);
+  if(matches.length!==1)throw Error('That Madrid time is missing or ambiguous because of the clock change. Choose a clear time.');return matches[0].toISOString();
+ }
+ function renderReview(){
+  const root=document.getElementById('golfCalendarReview');if(!root)return;root.replaceChildren();
+  queue().forEach(item=>{
+   const card=node('div','',root);card.style.cssText='border-top:1px solid rgba(255,255,255,.12);padding:12px 0;overflow-wrap:anywhere';
+   node('p','Golf round '+item.date+' · '+(item.needsTimeReview?'played times needed':item.candidates?.length?'possible existing Calendar entry':'sync pending'),card);
+   if(item.needsTimeReview){
+    node('p','Logging times do not match the selected played date. Enter when you actually played, in Madrid time.',card);
+    const dateLabel=node('label','Played date (Madrid)',card);const date=node('input','',dateLabel);date.type='date';date.value=item.date;date.className='finput';date.setAttribute('aria-label','Played date');
+    const startLabel=node('label','Start time',card);const start=node('input','',startLabel);start.type='time';start.className='finput';start.setAttribute('aria-label','Played start time');
+    const endLabel=node('label','Finish time',card);const end=node('input','',endLabel);end.type='time';end.className='finput';end.setAttribute('aria-label','Played finish time');
+    const b=node('button','Use these played times',card);b.className='btn btn-gold btn-sm';b.onclick=()=>{try{
+     const f=madridTime(date.value,start.value),t=madridTime(date.value,end.value);if(Date.parse(t)<=Date.parse(f)||Date.parse(t)>Date.now()+300000)throw Error('Finish must be after start and not in the future.');
+     localStorage.setItem(QUEUE,JSON.stringify(queue().map(x=>x.sourceId===item.sourceId?{...x,date:date.value,start:f,end:t,needsTimeReview:false}:x)));flush();renderReview();
+    }catch(e){show(e.message)}};
+   }
+   if(item.candidates?.length){
+    node('p','No existing entry was changed. Select your own matching entry, or add a separate round. Shared invitations cannot be changed.',card);
+    item.candidates.forEach(c=>{
+     const line=node('p','Golf · '+(c.start?new Date(c.start).toLocaleString('en-GB',{timeZone:'Europe/Madrid'}):item.date),card);
+     if(c.link){const a=node('a','Open Calendar entry',line);a.href=c.link;a.target='_blank';a.rel='noopener';}
+     if(c.canLink){const b=node('button','Use this existing entry',card);b.className='btn btn-ghost btn-sm';b.onclick=()=>resolve(item,{linkEventId:c.id})}
+    });
+    const separate=node('button','This is a separate round',card);separate.className='btn btn-ghost btn-sm';separate.onclick=()=>resolve(item,{allowSeparate:true});
+   }
+  });
+ }
+ function resolve(item,choice){try{localStorage.setItem(QUEUE,JSON.stringify(queue().map(x=>x.sourceId===item.sourceId?{...x,...choice,candidates:undefined}:x)));flush();renderReview()}catch(e){show('Review could not be saved: '+e.message)}}
+ function refresh(){const status=read(STATUS,{});const el=document.getElementById('golfCalendarStatus');if(el)el.textContent=status.text||(config().key?'Connected. Save a real round to sync.':'Not connected. Open MyDay Sports and connect Golf once.');renderReview()}
+ window.addEventListener('hashchange',()=>receive());window.addEventListener('online',flush);document.addEventListener('visibilitychange',()=>{if(!document.hidden)flush()});
+ if('launchQueue' in window)window.launchQueue.setConsumer(l=>{if(l.targetURL)receive(l.targetURL)});
+ setTimeout(()=>{receive();flush()},0);
+ return {enqueue,flush,check,queue,config,refresh};
+})();
+
 </script>
 </body>
 </html>
