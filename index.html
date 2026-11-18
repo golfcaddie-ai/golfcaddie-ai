@@ -2,7 +2,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
-<title>GolfCaddie AI v93</title>
+<title>GolfCaddie AI - storage safeguards</title>
 
 <!-- PWA / Home Screen -->
 <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -1268,9 +1268,38 @@ function populateCourseList() {
   }
 }
 
+// Storage preflight is a bounded test, not a promise about future phone space.
+function storageNotice(message,state){
+  var el=document.getElementById('roundStorageNotice');
+  if(!el){el=document.createElement('div');el.id='roundStorageNotice';el.setAttribute('role','status');el.setAttribute('aria-live','polite');el.style.cssText='position:fixed;left:8px;right:8px;bottom:68px;z-index:9999;border:1px solid #d8b848;border-radius:9px;padding:10px 12px;font:14px/1.4 sans-serif;box-shadow:0 2px 14px #0008';document.body.appendChild(el);}
+  el.style.background=state==='error'?'#601d1d':'#173b2b';el.style.color='#fff';el.dataset.state=state;
+  el.replaceChildren(document.createTextNode(message+' '));
+  if(state==='error'){
+    var btn=document.createElement('button');btn.type='button';btn.textContent='Share recovery copy';btn.onclick=shareRoundRecovery;btn.style.cssText='display:block;margin-top:7px;padding:8px;border-radius:6px';el.appendChild(btn);
+  }else{setTimeout(function(){if(el.dataset.state==='ok'&&el.textContent===message+' ')el.remove();},5000);}
+}
+function checkRoundStorage(){
+  var key='gcai_storage_probe_'+Date.now();
+  try{
+    // 128K UTF-16 characters: a conservative 256KiB allowance for text shot logs.
+    var sample='0'.repeat(131072);localStorage.setItem(key,sample);
+    if(localStorage.getItem(key)!==sample)throw Error('Storage check failed');
+    localStorage.removeItem(key);
+    storageNotice('Storage write check passed. Space can change; drafts will be checked throughout the round.','ok');return true;
+  }catch(e){try{localStorage.removeItem(key);}catch(ignore){}storageNotice('Storage is low or unavailable. Back up before starting. This app cannot guarantee space for a whole round.','error');return false;}
+}
+async function shareRoundRecovery(){
+  // Build from current memory, even when browser storage can no longer be written.
+  var recovery={format:'gcai-round-recovery',version:1,exportedAt:new Date().toISOString(),course:(document.getElementById('courseInput')||{}).value||'',date:(document.getElementById('roundDate')||{}).value||'',tee:selectedTee,holes:activeHoles,shots:shotData,currentHole:currentHole,partners:roundPlayers,partnerScores:playerScores};
+  var json=JSON.stringify(recovery,null,2),file=new File([json],'golfcaddie-round-recovery.json',{type:'text/plain'});
+  try{if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:'GolfCaddie round recovery'});return;}}
+  catch(e){if(e.name==='AbortError')return;}
+  var url=URL.createObjectURL(file),a=document.createElement('a');a.href=url;a.download=file.name;a.click();setTimeout(function(){URL.revokeObjectURL(url);},4000);
+  toast('Recovery file offered. Check it was saved outside this app. This file is a readable shot log, not a full-app restore backup.','inf');
+}
 function saveDraft(){
   try{
-    localStorage.setItem('gcai_draft',JSON.stringify({
+    var draftText=JSON.stringify({
       course:(document.getElementById('courseInput')||{}).value||'',
       date:(document.getElementById('roundDate')||{}).value||'',
       par:(document.getElementById('coursePar')||{}).value||72,
@@ -1283,20 +1312,23 @@ function saveDraft(){
       roundPlayers:roundPlayers, playerScores:playerScores,
       conditions:activeConditions, startMs:_roundStartMs,
       savedAt:Date.now()
-    }));
-  }catch(e){}
+    });
+    localStorage.setItem('gcai_draft',draftText);
+    if(localStorage.getItem('gcai_draft')!==draftText) throw Error('Draft verification failed');
+    storageNotice('Draft saved on this device.','ok'); return true;
+  }catch(e){ storageNotice('Draft save failed. New shots are not protected. Keep this app open and share a recovery copy now.','error'); return false; }
 }
 function clearDraft(){ localStorage.removeItem('gcai_draft'); }
 function loadDraft(){
   try{
     var d=JSON.parse(localStorage.getItem('gcai_draft')||'null');
     if(!d) return;
-    if(Date.now()-d.savedAt>86400000){clearDraft();return;}
+    // Unfinished rounds remain recoverable until explicitly discarded.
     showConfirm('Resume Round?',
       'Unfinished round at '+(d.course||'unknown')+'. Resume where you left off?',
       '⛳','Resume'
     ).then(function(ok){
-      if(!ok){clearDraft();return;}
+      if(!ok){return;}
       function g(id){return document.getElementById(id);}
       if(g('courseInput')) g('courseInput').value=d.course||'';
       if(g('roundDate'))   g('roundDate').value=d.date||'';
@@ -2851,13 +2883,15 @@ var roundPlayers = [];      // [{id,name,hcp}]
 var playerScores = {};      // {playerId: {holeIdx: gross}}
 var _partnerSeq = 0;
 
-function startRound() {
+async function startRound() {
+
   const course=document.getElementById('courseInput').value.trim();
   if (!course){toast('Enter a course name','err');return;}
   const holes=getSetupHoles();
   if (!holes.length){toast('Add at least one hole','err');return;}
+  if(!checkRoundStorage()) { if(!await showConfirm('Storage needs attention','There may not be enough browser storage for this round. Export a backup and free space first. Continue only if you accept that new shots may not be saved.','⚠️','Continue anyway')) return; }
   mergeCourseExtras(course, selectedTee, holes);   // pull elev/hazards/diagram/strategy from the saved template
-  saveCourseTemplate(course, holes, selectedTee, null);
+  try{saveCourseTemplate(course, holes, selectedTee, null);}catch(e){storageNotice('Course template could not be saved. New shots will be checked as you play.','error');}
   activeHoles=holes; shotData={}; currentHole=0; _roundStartMs=Date.now();
   holes.forEach((_,i)=>{shotData[i]=[];});
   // Playing partners: keep only rows with a name, start fresh score sheets
@@ -2874,6 +2908,7 @@ function startRound() {
   }
   showHoleScreen();
   renderHole(0);
+  saveDraft();
   try{ fillCourseElevations(); }catch(e){}
   try{ if(activeConditions.tempC==null && !document.getElementById('windSpeed').value) autoWeather(); }catch(e){}
 }
@@ -2960,8 +2995,8 @@ function holeMetresChanged() {
 
 function navHole(dir) { saveCurrentMeta(); saveDraft(); renderHole(currentHole+dir); }
 function saveAndNext(){
-  saveDraft();
   saveCurrentMeta();
+  saveDraft();
   var idx=currentHole;
   try{ commitFirstPuttGreen(idx); var _np=(shotData[idx]||[]).filter(function(x){ return (x.lie||'')!=='Penalty'; }), _ls=_np[_np.length-1]; if(_ls){ _ls.holed=true; autoCapturePoint('green', idx); } }catch(e){}
   renderHole(idx+1);
@@ -3723,11 +3758,15 @@ function finishRound() {
   }).filter(function(p){ return p.holesPlayed>0; });
   if(players.length) round.players=players;
   if(activeConditions.tempC!=null||activeConditions.altM!=null||activeConditions.pressureHpa!=null) round.conditions={tempC:activeConditions.tempC,pressureHpa:activeConditions.pressureHpa,altM:activeConditions.altM,windFromDeg:activeConditions.windFromDeg};
-  rounds.unshift(round);
-  localStorage.setItem('gcai_rounds',JSON.stringify(rounds));
+  // Do not mutate the round list or clear the draft until the write is verified.
+  var nextRounds=[round].concat(rounds), nextText=JSON.stringify(nextRounds);
+  try{localStorage.setItem('gcai_rounds',nextText);if(localStorage.getItem('gcai_rounds')!==nextText)throw Error('Save verification failed');}
+  catch(e){storageNotice('Round save failed. Keep this app open and share a recovery copy. Your last saved draft has been kept.','error');return;}
+  rounds=nextRounds;
+  storageNotice('Round saved on this device.','ok');
   try{ renderBackupBanner(); }catch(e){}
   clearDraft();
-  saveCourseTemplate(course, activeHoles, selectedTee, null);
+  try{saveCourseTemplate(course, activeHoles, selectedTee, null);}catch(e){toast('Round saved. Course template could not be updated.','err');}
   const diff=totalScore-par;
   toast(`Round saved! ${totalScore} (${diff>=0?'+':''}${diff})`, 'ok');
   if(notionCfg){
