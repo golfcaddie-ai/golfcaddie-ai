@@ -521,6 +521,7 @@ select.finput{-webkit-appearance:none;appearance:none;background-image:url("data
           </div>
         </div>
 
+        <div style="margin:10px 0"><label class="flabel">Entry mode</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><button id="modeFull" class="round-type-btn active" onclick="setEntryMode('full')">Full shot tracking</button><button id="modeQuick" class="round-type-btn" onclick="setEntryMode('quick')">Quick entry</button></div><div class="mu2" style="margin-top:5px">Quick: strokes, putts, penalties and basic stats.</div></div>
         <label class="flabel">Course</label>
         <div class="course-search-wrap">
           <div class="course-input-row">
@@ -1290,7 +1291,7 @@ function checkRoundStorage(){
 }
 async function shareRoundRecovery(){
   // Build from current memory, even when browser storage can no longer be written.
-  var recovery={format:'gcai-round-recovery',version:1,exportedAt:new Date().toISOString(),course:(document.getElementById('courseInput')||{}).value||'',date:(document.getElementById('roundDate')||{}).value||'',tee:selectedTee,holes:activeHoles,shots:shotData,currentHole:currentHole,partners:roundPlayers,partnerScores:playerScores};
+  var recovery={entryMode:entryMode,format:'gcai-round-recovery',version:1,exportedAt:new Date().toISOString(),course:(document.getElementById('courseInput')||{}).value||'',date:(document.getElementById('roundDate')||{}).value||'',tee:selectedTee,holes:activeHoles,shots:shotData,currentHole:currentHole,partners:roundPlayers,partnerScores:playerScores};
   var json=JSON.stringify(recovery,null,2),file=new File([json],'golfcaddie-round-recovery.json',{type:'text/plain'});
   try{if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:'GolfCaddie round recovery'});return;}}
   catch(e){if(e.name==='AbortError')return;}
@@ -1308,7 +1309,7 @@ function saveDraft(){
       playingHcp:(document.getElementById('playingHcp')||{}).value||'',
       windSpeed:activeWindSpeed, windDir:activeWindDir,
       roundType:(document.getElementById('activeRoundType')||{}).value||'casual', noDist:!!(document.getElementById('tournNoDist')||{}).checked,
-      activeHoles:activeHoles,shotData:shotData,currentHole:currentHole,
+      entryMode:entryMode,activeHoles:activeHoles,shotData:shotData,currentHole:currentHole,
       roundPlayers:roundPlayers, playerScores:playerScores,
       conditions:activeConditions, startMs:_roundStartMs,
       savedAt:Date.now()
@@ -1336,6 +1337,7 @@ function loadDraft(){
       if(g('playingHcp'))  g('playingHcp').value=d.playingHcp||'';
       if(g('weather'))     g('weather').value=d.weather||'Sunny';
       selectedTee=d.tee||'Blue';
+      entryMode=d.entryMode==='quick'?'quick':'full'; setEntryMode(entryMode);
       activeHoles=d.activeHoles||[];
       shotData=d.shotData||{};
       currentHole=d.currentHole||0;
@@ -2941,6 +2943,7 @@ function renderHole(idx) {
   const isLast=idx===total-1;
   document.getElementById('btnFinish').textContent=isLast?'Finish Round 💾':'Save & Next →';
   document.getElementById('btnFinish').onclick=isLast?finishRound:saveAndNext;
+  setHoleMode();
   renderShots(idx);
   updateScoreBanner(idx);
   // Defensive: a bug in any of these (GPS/partners/plays-like) must never leave the
@@ -2998,7 +3001,7 @@ function saveAndNext(){
   saveCurrentMeta();
   saveDraft();
   var idx=currentHole;
-  try{ commitFirstPuttGreen(idx); var _np=(shotData[idx]||[]).filter(function(x){ return (x.lie||'')!=='Penalty'; }), _ls=_np[_np.length-1]; if(_ls){ _ls.holed=true; autoCapturePoint('green', idx); } }catch(e){}
+  try{ commitFirstPuttGreen(idx); var _np=(shotData[idx]||[]).filter(function(x){ return (x.lie||'')!=='Penalty'; }), _ls=_np[_np.length-1]; if(_ls){ _ls.holed=true; /* Ball endpoints must never move course geometry. */ } }catch(e){}
   renderHole(idx+1);
 }
 
@@ -3061,6 +3064,7 @@ function approachDefault(idx, si, lie) {
 }
 
 function addShot(isPenalty=false) {
+  if(entryMode==='quick')return;
   const idx = currentHole, h = activeHoles[idx], si = shotData[idx].length;
   let shot;
   if (isPenalty) {
@@ -3193,6 +3197,7 @@ function renderHoleHistory(idx){
   el.innerHTML=html;
 }
 function renderShots(idx) {
+  if(entryMode==='quick'){ renderQuick(idx);return; }
   const area=document.getElementById('shotsArea');
   if(!shotData[idx]||!shotData[idx].length){
     area.innerHTML=`<div class="empty"><div class="ei">🏌️</div>Tap "+ Shot" to log your first shot</div>`;
@@ -3615,7 +3620,7 @@ function updateScoreBanner(idx) {
 // FINISH ROUND
 // ══════════════════════════════════════════════
 function confirmFinishRound() {
-  var holesLogged = activeHoles.filter(function(_,i){ return shotData[i] && shotData[i].length > 0; }).length;
+  var holesLogged = activeHoles.filter(function(_,i){ return entryMode==='quick'?!!(activeHoles[i].quick&&activeHoles[i].quick.strokes!=null):(shotData[i] && shotData[i].length > 0); }).length;
   var totalHoles  = activeHoles.length;
   var remaining   = totalHoles - holesLogged;
   var msg = holesLogged + ' of ' + totalHoles + ' holes logged'
@@ -3723,7 +3728,7 @@ function discardRound() {
 
 function finishRound() {
   saveCurrentMeta();
-  try{ var _lh=currentHole; commitFirstPuttGreen(_lh); var _np=(shotData[_lh]||[]).filter(function(x){ return (x.lie||'')!=='Penalty'; }), _ls=_np[_np.length-1]; if(_ls){ _ls.holed=true; autoCapturePoint('green', _lh); } }catch(e){}
+  try{ var _lh=currentHole; commitFirstPuttGreen(_lh); var _np=(shotData[_lh]||[]).filter(function(x){ return (x.lie||'')!=='Penalty'; }), _ls=_np[_np.length-1]; if(_ls){ _ls.holed=true; /* No automatic cup/centre capture. */ } }catch(e){}
   const course=document.getElementById('courseInput').value.trim();
   const date=document.getElementById('roundDate').value;
   const par=parseInt(document.getElementById('coursePar').value);
@@ -3732,16 +3737,18 @@ function finishRound() {
   const roundType=document.getElementById('activeRoundType')?.value||'casual';
   const holes=[]; let totalScore=0; let actualPar=0;
   activeHoles.forEach((h,idx)=>{
-    const shots=shotData[idx]||[]; if(!shots.length)return;
+    const shots=shotData[idx]||[];
+    if(entryMode==='quick'){ var q=h.quick; if(!q||q.strokes==null)return; totalScore+=q.strokes;actualPar+=(h.par||4);holes.push(Object.assign({},h,{score:q.strokes,shots:[],entryMode:'quick'}));return; }
+    if(!shots.length)return;
     totalScore+=shots.length;
     actualPar+=(h.par||4);
-    holes.push({hole:h.hole,par:h.par,metres:h.metres,hdcp:h.hdcp,elev:(h.elev!=null?h.elev:null),name:h.name,
+    holes.push({hole:h.hole,par:h.par,metres:h.metres,hdcp:h.hdcp,elev:(h.elev!=null?h.elev:null),name:h.name,garminComparisons:h.garminComparisons||undefined,
       strategy:h.strategy||null,hazards:h.hazards||null,diagram:h.diagram||null,score:shots.length,
-      shots:shots.map(s=>({club:s.club,lie:s.lie||s.type||'',distance:s.distance,direction:s.direction||null,vDir:s.vDir||null,approach:s.approach===true?true:(s.approach===false?false:undefined),holed:s.holed===true?true:undefined,pos:(s.pos&&!s.pos.bad)?[s.pos.lat,s.pos.lng]:undefined,meas:s.meas||undefined,full:s.full!==false,result:s.result,note:s.note}))});
+      shots:shots.map(s=>({club:s.club,lie:s.lie||s.type||'',distance:s.distance,direction:s.direction||null,vDir:s.vDir||null,approach:s.approach===true?true:(s.approach===false?false:undefined),holed:s.holed===true?true:undefined,pos:(s.pos&&!s.pos.bad)?[s.pos.lat,s.pos.lng]:undefined,gpsState:s.gpsState||undefined,gpsAt:s.gpsAt||undefined,gpsAcc:s.gpsAcc,manualPosition:s.manualPosition||undefined,meas:s.meas||undefined,full:s.full!==false,result:s.result,note:s.note}))});
   });
   if(!holes.length){toast('No shots logged','err');return;}
   const round={id:Date.now().toString(),course,date,par:actualPar,weather,score:totalScore,
-    playingHcp,tee:selectedTee,roundType,holes,
+    playingHcp,tee:selectedTee,roundType,entryMode,holes,
     windSpeed:activeWindSpeed,windDir:activeWindDir,
     savedAt:new Date().toISOString()};
   var _fc=currentFocus(); if(_fc) round.focus=_fc.text;
@@ -3767,7 +3774,7 @@ function finishRound() {
   try{ renderBackupBanner(); }catch(e){}
   clearDraft();
   try{saveCourseTemplate(course, activeHoles, selectedTee, null);}catch(e){toast('Round saved. Course template could not be updated.','err');}
-  const diff=totalScore-par;
+  const diff=totalScore-actualPar;
   toast(`Round saved! ${totalScore} (${diff>=0?'+':''}${diff})`, 'ok');
   if(notionCfg){
     saveRoundToNotion(round).catch(function(e){
@@ -3895,7 +3902,7 @@ function saveEditedRound(){
   // Recalc scores
   var r=rounds[_editRoundIdx];
   r.holes.forEach(function(h){
-    h.score=h.shots.filter(function(s){return (s.lie||s.type||'')!=='Penalty';}).length;
+    if(h.quick){h.score=h.quick.strokes;return;}h.score=h.shots.filter(function(s){return (s.lie||s.type||'')!=='Penalty';}).length;
   });
   r.score=r.holes.reduce(function(sum,h){return sum+(h.score||0);},0);
   r.par=r.holes.reduce(function(sum,h){return sum+(h.par||4);},0);
@@ -3962,7 +3969,7 @@ function openDetail(ref) {
   document.getElementById('rdTitle').textContent=`${r.course} — ${fmtDate(r.date)}`;
   const s=document.getElementById('rdScroll');
   const diff=r.score-r.par, ds=diff===0?'E':(diff>0?'+'+diff:diff);
-  const putts=r.holes.flatMap(h=>h.shots||[]).filter(s=>s.club==='P'&&(s.lie||'')==='Green').length;
+  const putts=r.holes.reduce((n,h)=>n+(h.quick?(h.quick.putts||0):(h.shots||[]).filter(s=>s.club==='P'&&(s.lie||'')==='Green').length),0);
   const netScore=r.playingHcp!=null?r.score-Math.round(r.playingHcp):null;
   const stableford=r.playingHcp!=null?calcStableford(r):null;
   s.innerHTML=`
@@ -3985,8 +3992,8 @@ function openDetail(ref) {
           <div class="rd-hole-num">Hole ${h.hole}${h.name?' — '+esc(h.name):''} · Par ${h.par}${h.metres?' · '+h.metres+'m':''}${h.hdcp?' · Hdcp '+h.hdcp:''}</div>
           <div class="rd-hole-score ${cls}">${h.score}</div>
         </div>
-        ${_editMode?`<button onclick="editAddShot(${ri},${hi})" style="font-size:.7rem;color:var(--gl);background:none;border:1px solid var(--gl);border-radius:5px;padding:3px 8px;cursor:pointer;margin-bottom:6px">+ Add Shot</button>`:''}
-        ${h.shots.map((s,si)=>{
+        ${_editMode&&!h.quick?`<button onclick="editAddShot(${ri},${hi})" style="font-size:.7rem;color:var(--gl);background:none;border:1px solid var(--gl);border-radius:5px;padding:3px 8px;cursor:pointer;margin-bottom:6px">+ Add Shot</button>`:''}
+        ${h.quick?quickSummaryHtml(h):''}${h.shots.map((s,si)=>{
         const lie=s.lie||s.type||'';
         const isPenalty=lie==='Penalty';
         // Shot distance = distance before minus distance after (skipping penalties)
@@ -4284,8 +4291,8 @@ function trendsHtml(all) {
   var per = function(fn){ return rs.map(function(x){ try { return fn(x.r, x.ri); } catch(e) { return null; } }); };
   var parOf = function(r){ return r.holes.reduce(function(a,h){ return a+(h.par||4); }, 0); };
   var scoreD = per(function(r){ var s = r.holes.reduce(function(a,h){ return a+(h.score||0); }, 0); return (s - parOf(r)) * (18 / r.holes.length); });
-  var gir = per(function(r){ var n=0; r.holes.forEach(function(h){ var np=(h.shots||[]).filter(function(s){return (s.lie||'')!=='Penalty';}); var gi=np.findIndex(function(s){return (s.lie||'')==='Green';}); if (gi!==-1 && gi<=(h.par||4)-2) n++; }); return n/r.holes.length*100; });
-  var putts = per(function(r){ var p=0; r.holes.forEach(function(h){ p+=(h.shots||[]).filter(function(s){return s.club==='P'&&(s.lie||'')==='Green';}).length; }); return p/r.holes.length*18; });
+  var gir = per(function(r){if(r.holes.some(h=>h.quick)){var known=r.holes.map(holeStatsOf).filter(x=>x.gir!==null);return known.length?known.filter(x=>x.gir).length/known.length*100:null;} var n=0; r.holes.forEach(function(h){ var np=(h.shots||[]).filter(function(s){return (s.lie||'')!=='Penalty';}); var gi=np.findIndex(function(s){return (s.lie||'')==='Green';}); if (gi!==-1 && gi<=(h.par||4)-2) n++; }); return n/r.holes.length*100; });
+  var putts = per(function(r){if(r.holes.some(h=>h.quick))return r.holes.reduce((n,h)=>n+(holeStatsOf(h).putts||0),0)/r.holes.length*18; var p=0; r.holes.forEach(function(h){ p+=(h.shots||[]).filter(function(s){return s.club==='P'&&(s.lie||'')==='Green';}).length; }); return p/r.holes.length*18; });
   var lessonMarks = getPractice().lessons.map(function(l){
     var idx = rs.findIndex(function(x){ return String(x.r.date) >= String(l.date); });
     return idx > 0 ? idx - 0.5 : null;
@@ -4307,6 +4314,7 @@ function scoreMarkHtml(score, par){
   return '<span class="sc '+cls+'">'+score+'</span>';
 }
 function holeStatsOf(h){
+  if(h.quick){var q=h.quick,st=shortGameStats(q);return {par:h.par||4,score:q.strokes,putts:q.putts,fw:(h.par||4)<4||q.fairway==null?null:q.fairway==='Hit',gir:q.gir==null?null:q.gir==='Hit',pens:q.penalties,saved:st.up,onePutt:q.putts===1,sand:st.sand};}
   var shots=h.shots||[], par=h.par||4, np=shots.filter(function(s){ return (s.lie||'')!=='Penalty'; });
   var gi=np.findIndex(function(s){ return (s.lie||s.type||'')==='Green'; });
   var gir=gi!==-1 && gi<=par-2;
@@ -4316,7 +4324,7 @@ function holeStatsOf(h){
     if(ti!==-1){ var nx=shots.find(function(s,i){ return i>ti && (s.lie||'')!=='Penalty'; }); fw=!!(nx && (nx.lie||'')==='Fairway'); } }
   var pens=shots.filter(function(s){ return (s.lie||'')==='Penalty'; }).length;
   var score=h.score||shots.length;
-  var saved=null; if(!gir){ saved = score<=par; }
+  var saved=null;
   return { par:par, score:score, gir:gir, putts:putts, fw:fw, pens:pens, saved:saved };
 }
 function roundScorecardHtml(ri, sgAll){
@@ -4328,13 +4336,13 @@ function roundScorecardHtml(ri, sgAll){
     return '<div class="scrow" onclick="var e=document.getElementById(\'rdh-'+st.hi+'\');if(e)e.scrollIntoView({behavior:\'smooth\',block:\'start\'})">'
       +'<b class="scc scc-hole">'+st.hole+'</b><span class="scc">'+st.par+'</span><span class="scc">'+scoreMarkHtml(st.score,st.par)+'</span><span class="scc">'+st.putts+'</span>'
       +'<span class="scc">'+(st.fw===null?'<span class="mu2">–</span>':(st.fw?'<span class="sg-pos">✓</span>':'<span class="sg-neg">✗</span>'))+'</span>'
-      +'<span class="scc">'+(st.gir?'<span class="sg-pos">●</span>':'<span class="sg-neg">○</span>')+'</span><span class="scc">'+sgv(st.sg)+'</span></div>';
+      +'<span class="scc">'+(st.gir==null?'<span class="mu2">–</span>':st.gir?'<span class="sg-pos">●</span>':'<span class="sg-neg">○</span>')+'</span><span class="scc">'+sgv(st.sg)+'</span></div>';
   };
   var sumRow=function(label, list){
     var sc=list.reduce(function(a,x){return a+x.score;},0), pr=list.reduce(function(a,x){return a+x.par;},0), pu=list.reduce(function(a,x){return a+x.putts;},0);
     var fwO=list.filter(function(x){ return x.fw!==null; }), fwH=fwO.filter(function(x){ return x.fw; }).length, g=list.filter(function(x){ return x.gir; }).length;
     var sgl=list.filter(function(x){ return x.sg!=null; }), sg=sgl.length?sgl.reduce(function(a,x){return a+x.sg;},0):null;
-    return '<div class="scrow scsum"><b class="scc scc-hole">'+label+'</b><span class="scc">'+pr+'</span><span class="scc">'+sc+'</span><span class="scc">'+pu+'</span><span class="scc">'+(fwO.length?fwH+'/'+fwO.length:'–')+'</span><span class="scc">'+g+'/'+list.length+'</span><span class="scc">'+sgv(sg)+'</span></div>';
+    return '<div class="scrow scsum"><b class="scc scc-hole">'+label+'</b><span class="scc">'+pr+'</span><span class="scc">'+sc+'</span><span class="scc">'+pu+'</span><span class="scc">'+(fwO.length?fwH+'/'+fwO.length:'–')+'</span><span class="scc">'+g+'/'+list.filter(function(x){return x.gir!==null;}).length+'</span><span class="scc">'+sgv(sg)+'</span></div>';
   };
   var html='<div class="card" style="margin-bottom:12px"><div class="scrow schd"><span class="scc scc-hole">Hole</span><span class="scc">Par</span><span class="scc">Score</span><span class="scc">Putts</span><span class="scc">Fwy</span><span class="scc">GIR</span><span class="scc">SG</span></div>';
   if(rows.length>9){
@@ -4342,7 +4350,7 @@ function roundScorecardHtml(ri, sgAll){
   } else html+=rows.map(rowHtml).join('')+sumRow('Total',rows);
   var fwAll=rows.filter(function(x){ return x.fw!==null; }), ud=rows.filter(function(x){ return x.saved!==null; });
   html+='<div style="margin-top:10px">'
-    +'<span class="chip2">GIR <b>'+rows.filter(function(x){return x.gir;}).length+'/'+rows.length+'</b></span>'
+    +'<span class="chip2">GIR <b>'+rows.filter(function(x){return x.gir;}).length+'/'+rows.filter(function(x){return x.gir!==null;}).length+'</b></span>'
     +(fwAll.length?'<span class="chip2">Fairways <b>'+fwAll.filter(function(x){return x.fw;}).length+'/'+fwAll.length+'</b></span>':'')
     +'<span class="chip2">Putts <b>'+rows.reduce(function(a,x){return a+x.putts;},0)+'</b></span>'
     +(ud.length?'<span class="chip2">Up and down <b>'+ud.filter(function(x){return x.saved;}).length+'/'+ud.length+'</b></span>':'')
@@ -4486,19 +4494,16 @@ function _renderStatsInner() {
   // ── GIR — reached green in regulation (par minus 2 strokes) ──
   // Shot index is 0-based, so for par 4: need green by shot index 2 (3rd shot or earlier)
   // We count non-penalty shots to determine position
-  const girCount=ah.filter(h=>{
-    var nonPenShots = h.shots.filter(s=>(s.lie||'')!=='Penalty');
-    var firstGreenIdx = nonPenShots.findIndex(s=>(s.lie||s.type||'')==='Green');
-    if(firstGreenIdx===-1) return false;
-    return firstGreenIdx <= h.par-2; // 0-indexed: par4 needs green by index 2
-  }).length;
-  const girPct=ah.length?Math.round(girCount/ah.length*100):0;
+  const girKnown=ah.filter(h=>holeStatsOf(h).gir!==null);
+  const girCount=girKnown.filter(h=>holeStatsOf(h).gir).length;
+  const girPct=girKnown.length?Math.round(girCount/girKnown.length*100):0;
 
   // ── Scrambling: missed GIR but still made par or better (up-and-down) ──
   // Also broken down by lie of the first non-GIR shot (Fairway / Rough / Bunker)
   var scramOpps = {total:0, Fairway:0, Rough:0, Bunker:0};
   var scramSaves = {total:0, Fairway:0, Rough:0, Bunker:0};
   ah.forEach(function(h){
+    if(h.quick){if(h.quick.gir!=null&&h.quick.gir!=='Hit'){scramOpps.total++;if(h.score<=h.par)scramSaves.total++;}return;}
     var nonPenShots = h.shots.filter(s=>(s.lie||'')!=='Penalty');
     var firstGreenIdx = nonPenShots.findIndex(s=>(s.lie||s.type||'')==='Green');
     var missedGIR = firstGreenIdx === -1 || firstGreenIdx > h.par - 2;
@@ -4612,24 +4617,14 @@ function _renderStatsInner() {
 
   // ── Putts — shots from Green lie ──
   const puttShots=as.filter(s=>s.club==='P'&&(s.lie||'')==='Green');
-  const totalPutts=puttShots.length;
-  const holesWithPutts=ah.filter(h=>h.shots.some(s=>(s.lie||s.type||'')==='Green'));
+  const totalPutts=ah.reduce((n,h)=>n+(holeStatsOf(h).putts||0),0);
+  const holesWithPutts=ah.filter(h=>h.quick?h.quick.putts!=null:h.shots.some(s=>(s.lie||s.type||'')==='Green'));
   const puttsPerHole=holesWithPutts.length?totalPutts/holesWithPutts.length:0;
-  const oneP=holesWithPutts.filter(h=>h.shots.filter(s=>(s.lie||s.type||'')==='Green').length===1).length;
-  const twoP=holesWithPutts.filter(h=>h.shots.filter(s=>(s.lie||s.type||'')==='Green').length===2).length;
-  const threeP=holesWithPutts.filter(h=>h.shots.filter(s=>(s.lie||s.type||'')==='Green').length>=3).length;
-
-  // ── Fairways hit — tee shot on par 4/5, next non-penalty shot from Fairway ──
-  const fwHoles=ah.filter(h=>h.par>=4&&h.shots.length>0);
-  const fwHit=fwHoles.filter(h=>{
-    // First shot must be from Tee
-    var teeShot=h.shots.find(s=>(s.lie||s.type||'')==='Tee');
-    if(!teeShot) return false;
-    var teeIdx=h.shots.indexOf(teeShot);
-    // Next real shot after tee (skip penalties)
-    var next=h.shots.find((s,i)=>i>teeIdx&&(s.lie||'')!=='Penalty');
-    return next&&(next.lie||'')==='Fairway';
-  }).length;
+  const oneP=holesWithPutts.filter(h=>holeStatsOf(h).putts===1).length;
+  const twoP=holesWithPutts.filter(h=>holeStatsOf(h).putts===2).length;
+  const threeP=holesWithPutts.filter(h=>holeStatsOf(h).putts>=3).length;
+  const fwHoles=ah.filter(h=>h.par>=4&&holeStatsOf(h).fw!==null);
+  const fwHit=fwHoles.filter(h=>holeStatsOf(h).fw).length;
   const fwPct=fwHoles.length?Math.round(fwHit/fwHoles.length*100):0;
 
   // ── Scoring distribution ──
@@ -4709,7 +4704,7 @@ function _renderStatsInner() {
     </div>
 
     <div class="kpi-grid">
-      <div class="kpi-tile"><div class="kpi-tl">Greens in reg</div><div class="kpi-tv">${girPct}%</div><div class="kpi-bar"><i style="width:${girPct}%"></i></div><div class="mu2">${girCount} / ${ah.length} holes</div></div>
+      <div class="kpi-tile"><div class="kpi-tl">Greens in reg</div><div class="kpi-tv">${girPct}%</div><div class="kpi-bar"><i style="width:${girPct}%"></i></div><div class="mu2">${girCount} / ${girKnown.length} known holes</div></div>
       <div class="kpi-tile"><div class="kpi-tl">Fairways</div><div class="kpi-tv">${fwPct}%</div><div class="kpi-bar"><i style="width:${fwPct}%"></i></div><div class="mu2">${fwHit} / ${fwHoles.length} holes</div></div>
       <div class="kpi-tile"><div class="kpi-tl">Putts / hole</div><div class="kpi-tv">${puttsPerHole?puttsPerHole.toFixed(2):'0.00'}</div><div class="mu2" style="margin-top:10px">${oneP} one · ${twoP} two · <span class="sg-neg">${threeP} three+</span></div></div>
       <div class="kpi-tile"><div class="kpi-tl">Scrambling</div><div class="kpi-tv">${scramOpps.total?scramNum+'%':'—'}</div><div class="kpi-bar"><i style="width:${scramNum}%"></i></div><div class="mu2">${scramSaves.total} / ${scramOpps.total} saves</div></div>
@@ -4816,7 +4811,7 @@ function _renderStatsInner() {
         <div class="gstat-kpi"><div class="kpi-big">${rounds.length}</div><div class="kpi-lbl">Rounds</div></div>
         ${tournamentRounds.length?`<div class="gstat-kpi"><div class="kpi-big" style="color:var(--gold)">${tournamentRounds.length}</div><div class="kpi-lbl">Tournament</div></div>`:''}
         <div class="gstat-kpi"><div class="kpi-big">${ah.length}</div><div class="kpi-lbl">Holes</div></div>
-        <div class="gstat-kpi"><div class="kpi-big">${as.length}</div><div class="kpi-lbl">Shots</div></div>
+        <div class="gstat-kpi"><div class="kpi-big">${as.length}</div><div class="kpi-lbl">Tracked shots</div></div>
       </div>
     </div>`)}
 
@@ -6075,7 +6070,7 @@ function setRoundType(t){
   var tbx=document.getElementById('tournBox'); if(tbx) tbx.style.display=t==='tournament'?'block':'none';
   if(t!=='tournament'){ var nd=document.getElementById('tournNoDist'); if(nd) nd.checked=false; }
   try{ if(activeHoles.length) renderHole(currentHole); }catch(e){}
-  document.querySelectorAll('.round-type-btn').forEach(b=>{
+  document.querySelectorAll('#rtb-casual,#rtb-tournament').forEach(b=>{
     b.classList.toggle('active', b.id==='rtb-'+t);
   });
 }
@@ -6642,17 +6637,16 @@ async function saveRoundToNotion(round, silent=false){
   if(!notionCfg) return;
   try{
     const diff=round.score-round.par, ds=diff===0?'E':(diff>0?'+'+diff:String(diff));
-    const putts=(round.holes||[]).flatMap(h=>h.shots||[])
-      .filter(s=>s.club==='P'&&(s.lie||'')==='Green').length;
+    const putts=(round.holes||[]).reduce((n,h)=>n+(holeStatsOf(h).putts||0),0);
     // Calculate GIR and FIR for Notion
     const holesArr = round.holes||[];
-    const girCount = holesArr.filter(function(h){
+    const girCount = holesArr.filter(function(h){if(h.quick)return h.quick.gir==='Hit';
       var nonPen = (h.shots||[]).filter(function(s){return (s.lie||'')!=='Penalty';});
       var firstGreen = nonPen.findIndex(function(s){return (s.lie||s.type||'')==='Green';});
       return firstGreen!==-1 && firstGreen<=(h.par||4)-2;
     }).length;
-    const fwHoles = holesArr.filter(function(h){return (h.par||4)>=4;});
-    const fwHit = fwHoles.filter(function(h){
+    const fwHoles = holesArr.filter(function(h){return (h.par||4)>=4&&holeStatsOf(h).fw!==null;});
+    const fwHit = fwHoles.filter(function(h){if(h.quick)return h.quick.fairway==='Hit';
       var shots = h.shots||[];
       var tee = shots.find(function(s){return (s.lie||'')==='Tee';});
       if(!tee) return false;
@@ -6673,7 +6667,7 @@ async function saveRoundToNotion(round, silent=false){
       'Tee':           {select:{name:round.tee||'Blue'}},
       'Weather':       {select:{name:round.weather||'Sunny'}},
       'Round Type':    {select:{name:round.roundType||'Casual'}},
-      'GIR (hit)':     {rich_text:[{text:{content:girCount+'/'+holesArr.length}}]},
+      'GIR (hit)':     {rich_text:[{text:{content:girCount+'/'+holesArr.filter(h=>holeStatsOf(h).gir!==null).length}}]},
       'Fairways (hit)':{rich_text:[{text:{content:fwHit+'/'+fwHoles.length}}]},
       'Notes':         {rich_text:[{text:{content:notes}}]}
     };
@@ -7197,7 +7191,7 @@ function suggestClub(target, lie){
 // Pre-fill distance (GPS at the ball, needs a saved green) and club (from plays-like distance)
 function autoFillShot(idx, si){
   var shot=(shotData[idx]||[])[si], h=activeHoles[idx]; if(!shot||!h) return;
-  var lie=shot.lie||'';
+  var lie=shot.lie||'';var capture=(shot._captureSeq||0)+1;shot._captureSeq=capture;
   // Putts never use GPS, except the FIRST putt of a hole: its position is where the approach finished
   var firstPutt=false;
   if(lie==='Green'){
@@ -7206,7 +7200,7 @@ function autoFillShot(idx, si){
     if(!firstPutt) return;
   }
   function finish(distance, pos){
-    var s2=(shotData[idx]||[])[si]; if(!s2) return;
+    var s2=(shotData[idx]||[])[si]; if(!s2||s2!==shot||shot._captureSeq!==capture) return;
     if(distance!=null && s2.distance==null){ s2.distance=distance; s2._gps=true; }
     var d=s2.distance;
     if(d!=null && s2._clubAuto && !(si===0 && (h.par||4)>=4)){
@@ -7217,15 +7211,17 @@ function autoFillShot(idx, si){
     try{ saveDraft(); }catch(e){}
     if(idx===currentHole){ renderShots(idx); refreshSGChips(idx); }
   }
-  var cardOnly=function(){ if(si===0 && shot.distance!=null) finish(null,null); };
+  var cardOnly=function(){if((shotData[idx]||[])[si]!==shot||shot._captureSeq!==capture)return;shot.pos=null;shot.gpsState='unavailable';saveDraft();if(idx===currentHole)renderShots(idx); if(si===0 && shot.distance!=null) finish(null,null); };
   if(!navigator.geolocation || noGpsDistance()){ cardOnly(); return; }
   var tgt=greenTargetPt();
+  shot.gpsState='locating'; if(idx===currentHole)renderShots(idx);
   getBestPos(3500,6).then(function(p){
-    if((p.coords.accuracy||99)>20){ cardOnly(); return; }
+    if((p.coords.accuracy||99)>20){if((shotData[idx]||[])[si]!==shot||shot._captureSeq!==capture)return;shot.pos=null;shot.gpsState='weak';shot.gpsAcc=Math.round(p.coords.accuracy);saveDraft();if(idx===currentHole)renderShots(idx);return;}
     var here={lat:p.coords.latitude,lng:p.coords.longitude};
-    var s2=(shotData[idx]||[])[si]; if(!s2) return;
+    var s2=(shotData[idx]||[])[si]; if(!s2||s2!==shot||shot._captureSeq!==capture) return;
+    s2.gpsState='saved';s2.gpsAt=Date.now();s2.gpsAcc=Math.round(p.coords.accuracy);
     s2.pos={ lat:Math.round(here.lat*1e6)/1e6, lng:Math.round(here.lng*1e6)/1e6, acc:Math.round(p.coords.accuracy||0) };
-    if(firstPutt){ s2.pos.fp=true; updateMeasFor(idx, si); return; }   // the green is saved only once the shot is confirmed as a putt
+    if(firstPutt){ s2.pos.fp=true; updateMeasFor(idx, si);saveDraft();if(idx===currentHole)renderShots(idx); return; }   // the green is saved only once the shot is confirmed as a putt
     var d=tgt?Math.round(haversine(here,tgt)):null;
     if(si===0){
       if(d!=null && h.metres && Math.abs(d-h.metres)>Math.max(40,h.metres*0.25)) s2.pos.bad=true;   // not standing on the tee
@@ -7302,7 +7298,7 @@ function commitFirstPuttGreen(idx){
   for(var i=0;i<sh.length;i++){
     var x=sh[i];
     if((x.lie||'')==='Green' && (x.lie||'')!=='Penalty'){
-      if(x.pos && x.pos.fp && !x.pos.bad && !x.pos.committed){ x.pos.committed=true; greenFromFirstPutt(idx,i); }
+      if(x.pos && x.pos.fp && !x.pos.bad && !x.pos.committed){ x.pos.committed=true; /* First putt closes approach only, never course centre. */ }
       break;
     }
   }
@@ -7902,6 +7898,48 @@ function fmtDate(d){
 }
 </script>
 <script>
+</script>
+<script>
+// Approved current-layout entry and GPS additions, 18 November 2026.
+var entryMode='full',_quickDetail=false,_garminOpen=false,_compareFix=null;
+function setEntryMode(v){entryMode=v==='quick'?'quick':'full';['Full','Quick'].forEach(function(n){var e=document.getElementById('mode'+n);if(e)e.classList.toggle('active',entryMode===n.toLowerCase());});}
+function setHoleMode(){var a=document.querySelector('.hole-actions');if(a){a.children[0].style.visibility=entryMode==='quick'?'hidden':'';a.children[1].style.visibility=entryMode==='quick'?'hidden':'';} _quickDetail=false;_garminOpen=false;_compareFix=null;renderGarmin();}
+function quickData(idx){var h=activeHoles[idx];return h.quick||(h.quick={strokes:null,putts:null,penalties:0,fairway:null,gir:null,start:null,finish:null});}
+function quickValid(q){return q&&Number.isInteger(q.strokes)&&q.strokes>=1&&q.strokes<=30&&Number.isInteger(q.putts)&&q.putts>=0&&q.putts<=q.strokes&&Number.isInteger(q.penalties)&&q.penalties>=0&&q.putts+q.penalties<=q.strokes&&(!q.finish||q.start&&q.start!=='None')&&(!q.finish||q.finish<=q.strokes)&&(!q.finish||q.finish===3||q.putts<=q.finish);}
+function shortGameStats(q){var known=q&&q.start&&q.start!=='None'&&q.finish!=null;return {up:known?q.finish<=2:null,sand:known&&q.start==='Bunker'?q.finish<=2:null};}
+function quickSet(k,v){var q=quickData(currentHole);if(['strokes','putts','penalties'].indexOf(k)>=0){q[k]=v===''?null:Number(v);saveDraft();return;}q[k]=q[k]===v?null:v;if(k==='start'&&q.start==='None')q.finish=null;saveDraft();renderQuick(currentHole);}
+function quickButtons(k,items){var q=quickData(currentHole);return '<div class="result-row" style="grid-template-columns:repeat(3,1fr)">'+items.map(function(a){var val=Array.isArray(a)?a[0]:a,label=Array.isArray(a)?a[1]:a;return '<button class="rbtn'+(q[k]===val?' active-OK':'')+'" onclick="quickSet(\''+k+'\','+JSON.stringify(val).replace(/"/g,'&quot;')+')">'+label+'</button>';}).join('')+'</div>';}
+function renderQuick(idx){var q=quickData(idx),a=document.getElementById('shotsArea');if(!a)return;try{renderHoleHistory(idx);}catch(e){}var num=function(k,l){return '<div class="sf"><label>'+l+'</label><input type="number" inputmode="numeric" min="0" max="30" value="'+(q[k]==null?'':q[k])+'" oninput="quickSet(\''+k+'\',this.value)"></div>';};var body='';if(_quickDetail){body='<div class="sf"><label>First greenside starting lie</label>'+quickButtons('start',[['Off','Off green'],['Bunker','Greenside bunker'],['None','No attempt']])+'</div>';if(q.start!=='None')body+='<div class="sf" style="margin-top:12px"><label>Strokes to finish · includes putts & penalties</label>'+quickButtons('finish',[[1,'1'],[2,'2'],[3,'3+']])+'</div>';body+='<div class="mu2" style="line-height:1.5;margin-top:12px">From the first greenside attempt until holed, including repeat chips and bunker shots. Not a fairway bunker.<br>2 or fewer = up-and-down. Bunker + 2 or fewer = sand save.<br>One sequence per hole. Skipped stays unknown.</div><button class="btn btn-ghost btn-sm" style="margin-top:12px;width:100%" onclick="_quickDetail=false;renderQuick(currentHole)">Done · return to score</button>';}else{body='<div class="shot-grid">'+num('strokes','Total strokes · incl. penalties')+num('putts','Putts')+'</div><div style="max-width:49%">'+num('penalties','Penalty strokes')+'</div>';if((activeHoles[idx].par||4)>=4)body+='<div class="sf" style="margin-top:10px"><label>Fairway</label>'+quickButtons('fairway',['Miss left','Hit','Miss right'])+'</div>';body+='<div class="sf" style="margin-top:10px"><label>Green in regulation</label>'+quickButtons('gir',['Miss left','Miss short','Hit','Miss right','Miss long'])+'</div><button class="btn btn-ghost btn-sm" style="margin-top:10px;width:100%" onclick="_quickDetail=true;renderQuick(currentHole)">Greenside finish · '+(q.start?(q.start==='None'?'No attempt':q.start+' · '+(q.finish===3?'3+':q.finish||'?')+' strokes'):'optional')+' ▾</button><div class="mu2" style="margin-top:7px">One-putt holes counted automatically. Leave optional stats blank if unknown.</div>';}
+a.innerHTML='<div class="shot-card"><div class="shot-hdr"><div class="shot-badge">'+activeHoles[idx].hole+'</div><div class="shot-lbl">'+(_quickDetail?'Greenside finish':'Quick entry')+'</div></div>'+body+'</div>';}
+var _entrySaveNext=saveAndNext;saveAndNext=function(){if(entryMode==='quick'&&!quickValid(quickData(currentHole))){toast('Enter total strokes, putts and penalties. Counts must fit the score and greenside finish.','err');return;}return _entrySaveNext();};
+var _entryFinish=finishRound;finishRound=function(){if(entryMode==='quick'){for(var i=0;i<activeHoles.length;i++){var q=activeHoles[i].quick;if(q&&(q.strokes!=null||q.putts!=null)&&!quickValid(q)){toast('Check score, putts, penalties and finish on hole '+activeHoles[i].hole,'err');renderHole(i);return;}}}return _entryFinish();};
+function quickSummaryHtml(h){var q=h.quick,st=shortGameStats(q);return '<div class="mu2" style="line-height:1.7">Quick entry · Putts '+q.putts+' · Penalties '+q.penalties+'<br>Fairway: '+esc(q.fairway||'Unknown')+' · GIR: '+esc(q.gir||'Unknown')+(st.up!==null?'<br>Greenside finish: '+esc(q.start)+' · '+(q.finish===3?'3+':q.finish)+' strokes · '+(st.up?'Up-and-down':'Not converted')+(st.sand===true?' · Sand save':''):'')+'</div>';}
+var _oldRoundStatLine=roundStatLine;roundStatLine=function(r){if(!(r.holes||[]).some(h=>h.quick))return _oldRoundStatLine(r);var ss=r.holes.map(holeStatsOf),g=ss.filter(x=>x.gir!==null),f=ss.filter(x=>x.fw!==null),u=ss.filter(x=>x.saved!==null),sa=ss.filter(x=>x.sand!==null&&x.sand!==undefined);return 'GIR '+g.filter(x=>x.gir).length+'/'+g.length+' · FW '+f.filter(x=>x.fw).length+'/'+f.length+' · Putts '+ss.reduce((a,x)=>a+(x.putts||0),0)+' · One-putt holes '+ss.filter(x=>x.putts===1).length+(u.length?' · Up-and-down '+u.filter(x=>x.saved).length+'/'+u.length:'')+(sa.length?' · Sand saves '+sa.filter(x=>x.sand).length+'/'+sa.length:'');};
+// Compact capture status uses the existing shot card and action row.
+var _entryBuildCard=buildShotCard;buildShotCard=function(idx,si,shot){var card=_entryBuildCard(idx,si,shot);if((shot.lie||'')==='Penalty')return card;var e=document.createElement('div');e.style='padding:5px 8px;margin:0 0 8px;border-left:2px solid var(--gold);font-size:.67rem;line-height:1.5;color:var(--gl)';var state=shot.gpsState;var txt=state==='locating'?'Shot saved · finding position…':state==='saved'?'✓ + Shot position saved · reported accuracy '+shot.gpsAcc+' m':state==='weak'?'GPS weak · shot saved without position ('+shot.gpsAcc+' m reported)':state==='earlier'?'Earlier shot · no live GPS position':state==='manual'?'Manually corrected position · not GPS measured':state==='unavailable'?'GPS unavailable · shot saved without position':'';if(shot.pos&&shot.pos.bad)txt='Position not trusted · check or leave unknown';if(!txt)return card;e.textContent=txt;if((shot.lie||'')==='Green'&&state==='saved')e.appendChild(document.createTextNode(' · Approach endpoint only. Putt length stays manual. Stored centre unchanged.'));if(state!=='locating'){var div=document.createElement('div');div.style='display:flex;gap:6px;flex-wrap:wrap;margin-top:5px';div.innerHTML=(state!=='saved'&&state!=='manual'?'<button class="btn btn-ghost btn-sm" onclick="retryShotGPS('+idx+','+si+')">Retry here</button>':'')+'<button class="btn btn-ghost btn-sm" onclick="editShotLocation('+idx+','+si+')">Earlier shot / edit location</button>';e.append(div);}var hdr=card.querySelector('.shot-hdr');if(hdr)hdr.after(e);return card;};
+function clearShotMeasurements(idx,si){var ss=shotData[idx]||[];for(var j=Math.max(0,si-1);j<=si;j++){var s=ss[j];if(!s)continue;delete s.meas;if(s._dirAuto){s.direction=null;s._dirAuto=false;}if(s._vAuto){s.vDir=null;s._vAuto=false;}}}
+async function retryShotGPS(idx,si){var s=(shotData[idx]||[])[si];if(!s)return;if(!await showConfirm('Retry from the same ball?','Only retry if you are still at the position where this shot will be played. If you moved, use Earlier shot / edit location.','📍','Still here'))return;if((shotData[idx]||[])[si]!==s)return;clearShotMeasurements(idx,si);s.pos=null;s.manualPosition=false;autoFillShot(idx,si);}
+async function editShotLocation(idx,si){var s=(shotData[idx]||[])[si];if(!s)return;s._captureSeq=(s._captureSeq||0)+1;clearShotMeasurements(idx,si);s.pos=null;s.manualPosition=false;s.gpsState='earlier';saveDraft();renderShots(idx);var ov=document.createElement('div');ov.className='overlay open';ov.style='display:flex;z-index:10000';ov.id='shotLocationEdit';ov.innerHTML='<div class="modal" style="max-width:400px;width:94%;padding:20px;background:var(--gd);border-radius:14px"><h3 style="color:var(--gold)">Earlier shot / edit location</h3><p class="mu2">Live position cleared. Set the original ball position on the map or leave unknown. Manual correction is not GPS measured.</p><div id="shotEditMap" style="height:260px;margin:10px 0"></div><div id="shotEditNote" class="mu2">Tap the original position.</div><div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-ghost" id="leaveShotUnknown">Leave unknown</button><button class="btn btn-gold" id="saveShotManual" disabled>Save position</button></div></div>';document.body.append(ov);var pt=null,mark=null;document.getElementById('leaveShotUnknown').onclick=()=>ov.remove();document.getElementById('saveShotManual').onclick=()=>{if(!pt||(shotData[idx]||[])[si]!==s)return;s.pos={lat:pt.lat,lng:pt.lng,manual:true};s.manualPosition=true;s.gpsState='manual';/* manual positions kept separate from measured distances */saveDraft();renderShots(idx);ov.remove();};if(typeof L==='undefined'){try{await loadShotMap();}catch(e){document.getElementById('shotEditNote').textContent='Map unavailable offline. Leave unknown and correct when connected.';return;}}var g=greenRec(),center=g&&g.c||g&&g.tee;if(!center){document.getElementById('shotEditNote').textContent='No map anchor for this hole. Leave unknown, or calibrate the course first.';return;}var m=L.map('shotEditMap').setView([center.lat,center.lng],17);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(m);m.on('click',function(ev){pt=ev.latlng;if(mark)mark.setLatLng(pt);else mark=L.marker(pt).addTo(m);document.getElementById('saveShotManual').disabled=false;});setTimeout(()=>m.invalidateSize(),100);}
+// Prevent manual map points from being used as measured GPS endpoints.
+var _entryUpdateMeas=updateMeasFor;updateMeasFor=function(idx,si){var ss=shotData[idx]||[],prev=si-1;while(prev>=0&&(ss[prev].lie||'')==='Penalty')prev--;if((ss[si]&&ss[si].manualPosition)||(ss[prev]&&ss[prev].manualPosition))return;return _entryUpdateMeas(idx,si);};
+var _entryRenderGps=renderGpsReadout;renderGpsReadout=function(cur,acc){_entryRenderGps(cur,acc);var el=document.getElementById('gpsReadout'),r=greenRec();if(!el)return;var extra=el.querySelector('button');var boxes=['f','c','b'].map(function(k){var pt=k==='c'?greenCentre(r||{}):r&&r[k];return '<span style="border:1px solid #ffffff24;border-radius:5px;padding:4px 8px">'+k.toUpperCase()+' <b>'+(pt?Math.round(haversine(cur,pt)):'—')+'</b></span>';}).join('');el.innerHTML='<span style="display:inline-flex;gap:4px;flex-wrap:wrap">'+boxes+'<span style="opacity:.55;align-self:center">m · ±'+(acc==null?'?':acc)+'m</span></span>'+(extra?extra.outerHTML:'')+(_lastPlaysLike!=null?' <span style="color:var(--gold)">Plays-like '+_lastPlaysLike+' m</span>':'');};
+function renderGarmin(){var old=document.getElementById('garminCompare');if(old)old.remove();var bar=document.getElementById('gpsBar');if(!bar)return;var e=document.createElement('div');e.id='garminCompare';e.style='width:100%;padding-top:4px';e.innerHTML='<button class="btn btn-ghost btn-sm" style="padding:4px 8px;font-size:.66rem" onclick="toggleGarmin()">Compare Garmin readings '+(_garminOpen?'▴':'▾')+'</button>';if(_garminOpen){var prev=activeHoles[currentHole].garminComparisons||[],last=prev[prev.length-1];e.innerHTML+='<div class="sf" style="margin-top:7px"><label>Garmin comparison · metres</label><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px">'+['Front','Centre','Back'].map(n=>'<div><label>'+n+'</label><input id="watch'+n+'" type="number" inputmode="decimal" min="0" max="1000"></div>').join('')+'</div></div><div style="display:flex;gap:6px;align-items:center;margin-top:6px"><select id="watchKind" class="finput" style="padding:7px;font-size:.68rem;flex:1"><option value="unknown">Reading type?</option><option value="raw">Raw distance · m</option><option value="playslike">PlaysLike</option><option value="unknown">Not sure</option></select><button class="btn btn-gold btn-sm" onclick="saveGarmin()">Save comparison</button></div><label class="mu2" style="display:flex;gap:5px;margin-top:7px"><input id="watchSame" type="checkbox"> Same spot, course, hole and metres</label><div id="compareGpsNote" class="mu2" style="line-height:1.4;margin-top:5px">Capturing comparison position…</div><div class="mu2">Comparison only. Course points are unchanged.</div>'+(last?'<div class="mu2" style="margin-top:5px">Last saved: F '+last.front+' / C '+last.centre+' / B '+last.back+' m · '+esc(last.kind)+'</div>':'');}bar.append(e);}
+function toggleGarmin(){_garminOpen=!_garminOpen;_compareFix=null;renderGarmin();if(!_garminOpen)return;var idx=currentHole;getBestPos(3500,6).then(p=>{if(idx!==currentHole||!_garminOpen)return;_compareFix={lat:p.coords.latitude,lng:p.coords.longitude,acc:p.coords.accuracy,at:Date.now()};var n=document.getElementById('compareGpsNote');if(n)n.textContent='Snapshot now · reported accuracy '+Math.round(p.coords.accuracy)+' m. Stay here while entering.';renderGpsReadout(_compareFix,Math.round(_compareFix.acc));}).catch(()=>{var n=document.getElementById('compareGpsNote');if(n)n.textContent='GPS unavailable. Can save a comparison note only.';});}
+function saveGarmin(){var vals=['Front','Centre','Back'].map(n=>{var el=document.getElementById('watch'+n);return el&&el.value!==''?Number(el.value):NaN;});if(vals.some(v=>!Number.isFinite(v)||v<0||v>1000)||vals[0]>vals[1]||vals[1]>vals[2]){toast('Enter front ≤ centre ≤ back in metres.','err');return;}if(!document.getElementById('watchSame').checked){toast('Confirm same spot, course, hole and metres.','err');return;}var kind=document.getElementById('watchKind').value,f=_compareFix,valid=!!(f&&Date.now()-f.at<120000&&f.acc<=20&&kind==='raw'),rec={front:vals[0],centre:vals[1],back:vals[2],kind,at:new Date().toISOString(),fix:f?Object.assign({},f):null,eligibleForReview:valid,comparisonOnly:true};var g=greenRec();rec.app={front:g&&g.f&&f?Math.round(haversine(f,g.f)):null,centre:g&&greenCentre(g)&&f?Math.round(haversine(f,greenCentre(g))):null,back:g&&g.b&&f?Math.round(haversine(f,g.b)):null};var h=activeHoles[currentHole];(h.garminComparisons||(h.garminComparisons=[])).push(rec);saveDraft();toast('Comparison saved'+(valid?'': ' as note only')+'. Course distances unchanged.','ok');_garminOpen=false;renderGarmin();}
+// Garmin observations live on each hole and travel in drafts, round exports and backup.
+var _entryFinishFix=renderHole;renderHole=function(idx){_entryFinishFix(idx);renderGarmin();};
+// Global short-game totals derive only from explicitly recorded attempts.
+var _entryStats=renderStats;renderStats=function(){_entryStats();var grid=document.getElementById('statsGrid');if(!grid)return;var all=rounds.flatMap(r=>r.holes||[]).filter(h=>h.quick),us=all.map(h=>shortGameStats(h.quick)),u=us.filter(x=>x.up!==null),sa=us.filter(x=>x.sand!==null);var old=document.getElementById('recordedShortGame');if(old)old.remove();if(!all.length)return;var d=document.createElement('div');d.id='recordedShortGame';d.className='card';d.style='grid-column:1/-1';d.innerHTML='<div class="card-title">Recorded greenside finishes</div><span class="chip2">Up-and-down '+u.filter(x=>x.up).length+'/'+u.length+'</span><span class="chip2">Sand saves '+sa.filter(x=>x.sand).length+'/'+sa.length+'</span><div class="mu2">Quick entry: first greenside sequence, holed in 2 strokes or fewer. Unknowns excluded. Not inferred from one putt or par.</div>';grid.append(d);};
+setEntryMode('full');
+
+function loadShotMap(){if(window.L)return Promise.resolve();if(window._shotMapPromise)return window._shotMapPromise;window._shotMapPromise=new Promise(function(resolve,reject){var c=document.createElement('link');c.rel='stylesheet';c.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';document.head.append(c);var j=document.createElement('script');j.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';j.onload=resolve;j.onerror=reject;document.head.append(j);});return window._shotMapPromise;}
+var _entrySG=calcSG;calcSG=function(v){var saved=rounds;try{rounds=rounds.map(r=>Object.assign({},r,{holes:(r.holes||[]).filter(h=>!h.quick)}));return _entrySG(v);}finally{rounds=saved;}};
+var _entryOpenDetail=openDetail;openDetail=function(ref){_entryOpenDetail(ref);var ri=roundIdx(ref),r=rounds[ri];if(!r)return;(r.holes||[]).forEach(function(h,hi){if(!h.garminComparisons||!h.garminComparisons.length)return;var el=document.getElementById('rdh-'+hi);if(!el)return;var d=document.createElement('details');d.className='mu2';var summary=document.createElement('summary');summary.textContent='Garmin comparisons ('+h.garminComparisons.length+')';d.append(summary);h.garminComparisons.forEach(function(c){var p=document.createElement('p');p.textContent='F '+c.front+' / C '+c.centre+' / B '+c.back+' m · '+c.kind+' · '+c.at+' · comparison only';d.append(p);});el.append(d);});};
+
+var _entryLie=onLieChange;onLieChange=function(idx,si,val){_entryLie(idx,si,val);var s=(shotData[idx]||[])[si];if(!s||val!=='Green'||!s.pos||s.manualPosition)return;var prior=(shotData[idx]||[]).slice(0,si).filter(x=>(x.lie||'')!=='Penalty');if(prior.length&&!prior.some(x=>x.lie==='Green')){s.pos.fp=true;updateMeasFor(idx,si);saveDraft();renderShots(idx);}};
+
+var _entryRoundExtras=roundExtrasHtml;roundExtrasHtml=function(ri){var r=rounds[ri];if(r&&r.entryMode==='quick')return '<div class="card"><div class="mu2">Quick entry has score and basic stats only. Strokes gained and shot distances are not inferred.</div></div>';return _entryRoundExtras(ri);};
+
 </script>
 </body>
 </html>
