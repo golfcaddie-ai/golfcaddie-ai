@@ -570,6 +570,7 @@ select.finput{-webkit-appearance:none;appearance:none;background-image:url("data
 
       <div class="card">
         <div class="card-title">👥 Playing Partners <span style="font-size:.68rem;font-weight:400;color:var(--tl)">— score only, optional</span></div>
+        <div id="gameSection"></div>
         <div id="partnersList"></div>
         <button class="btn btn-ghost btn-sm" id="addPartnerBtn" onclick="addPartner()" style="width:100%;margin-top:4px">+ Add Partner</button>
       </div>
@@ -993,6 +994,15 @@ select.finput{-webkit-appearance:none;appearance:none;background-image:url("data
           placeholder="Paste the COURSE_DATA block that Claude returns here…"></textarea>
         <button class="btn btn-gold btn-block" onclick="importLookupData()">⛳ Load Course into App</button>
         <div id="lookupImportStatus" style="font-size:.75rem;margin-top:7px;color:var(--tl)"></div>
+      </div>
+    </div>
+
+    <div class="modal-sec" style="margin-top:18px;padding-top:18px;border-top:1px solid rgba(255,255,255,.07)">
+      <h3>🎯 Games <span style="font-size:.65rem;color:var(--tl);font-weight:400">handicap allowance</span></h3>
+      <p style="margin-bottom:9px;font-size:.79rem;color:var(--tl)">Percentage of each entered handicap used in partner games (4-2-0, 2 vs 2, match play, strokes, Stableford). Change it ahead of a game; saved rounds keep the % they were played with.</p>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input class="finput" id="gameAllowanceInput" type="number" min="50" max="100" step="5" style="width:84px" onchange="setGameAllowance(this.value)"/>
+        <span style="font-size:.8rem;color:var(--cream)">% of handicap</span>
       </div>
     </div>
 
@@ -6953,7 +6963,7 @@ function renderPartners(){
   list.innerHTML=roundPlayers.map(function(p){
     return '<div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">'
       +'<input class="finput" style="flex:2" placeholder="Name" value="'+escAttr(p.name)+'" oninput="updatePartner('+p.id+',\'name\',this.value)"/>'
-      +'<input class="finput" style="flex:1" type="number" step="0.1" placeholder="Hcp" value="'+escAttr(p.hcp)+'" oninput="updatePartner('+p.id+',\'hcp\',this.value)"/>'
+      +'<input class="finput" style="flex:1" type="number" step="0.1" placeholder="Index" value="'+escAttr(p.hcp)+'" oninput="updatePartner('+p.id+',\'hcp\',this.value)"/>'
       +'<button class="btn btn-ghost btn-sm" onclick="removePartner('+p.id+')" style="padding:8px 10px">✕</button>'
       +'</div>';
   }).join('');
@@ -8033,6 +8043,352 @@ var _entryOpenDetail=openDetail;openDetail=function(ref){_entryOpenDetail(ref);v
 var _entryLie=onLieChange;onLieChange=function(idx,si,val){_entryLie(idx,si,val);var s=(shotData[idx]||[])[si];if(!s||val!=='Green'||!s.pos||s.manualPosition)return;var prior=(shotData[idx]||[]).slice(0,si).filter(x=>(x.lie||'')!=='Penalty');if(prior.length&&!prior.some(x=>x.lie==='Green')){s.pos.fp=true;updateMeasFor(idx,si);saveDraft();renderShots(idx);}};
 
 var _entryRoundExtras=roundExtrasHtml;roundExtrasHtml=function(ri){var r=rounds[ri];if(r&&r.entryMode==='quick')return '<div class="card"><div class="mu2">Quick entry has score and basic stats only. Strokes gained and shot distances are not inferred.</div></div>';return _entryRoundExtras(ri);};
+
+</script>
+
+<script>
+// ══════════════════════════════════════════════
+// PARTNER GAMES (v95): 4-2-0 game, 2 vs 2, match play, strokes, Stableford
+// Handicap allowance = % of the entered handicap, chosen in Settings (default 90%).
+// The allowance in force at round start is saved on the round; later Settings
+// changes never alter saved rounds. Stableford pts and game pts are separate
+// tallies. A hole only counts once a score is explicitly entered for it.
+// ══════════════════════════════════════════════
+var setupGame=null, activeGame=null, gameTeammateId=null, _pendingGameRestore=null;
+var GAME_KINDS=[['strokes','Strokes'],['stableford','Stableford'],['match','Match play'],['stbf420','4-2-0 game'],['team2v2','2 vs 2']];
+function getGameAllowance(){ var v=parseInt(localStorage.getItem('gcai_gameAllowance')); if(!isFinite(v)) v=90; return Math.min(100,Math.max(50,v)); }
+function setGameAllowance(v){ v=Math.min(100,Math.max(50,parseInt(v)||90)); localStorage.setItem('gcai_gameAllowance',String(v)); try{renderGame();}catch(e){} toast('Game handicap allowance: '+v+'%','ok'); }
+function gamePH(hcp,al){ if(hcp==null||hcp===''||isNaN(parseFloat(hcp))) return null; return Math.round(parseFloat(hcp)*al/100); }
+function gameStrokesFor(ph,si){ if(ph==null||ph<=0||!si||si<=0) return 0; return Math.min(3, Math.floor(ph/18)+((ph%18)>0&&si<=(ph%18)?1:0)); }
+function gameHolePts(gross,ph,si,par){ if(gross==null||!par) return null; return Math.max(0,2-((gross-gameStrokesFor(ph,si))-par)); }
+
+// ── Row builders: one row per player (you + partners), name-keyed ──
+function gameLiveRows(idx){
+  var g=activeGame, si=(activeHoles[idx]||{}).hdcp||0, par=(activeHoles[idx]||{}).par||4;
+  var rows=[{name:'You',you:true,ph:gamePH(g.you.hcp,g.allowance),gross:gameUserGross(idx)}];
+  g.partners.forEach(function(p){ rows.push({name:p.name,ph:gamePH(p.hcp,g.allowance),gross:gamePartnerGross(p.id,idx)}); });
+  rows.forEach(function(r){ r.pts=r.gross!=null?gameHolePts(r.gross,r.ph,si,par):null; });
+  return rows;
+}
+function gameRoundRows(r,k){
+  var h=r.holes[k], idx=(h.hole||k+1)-1, al=r.game.allowance;
+  var rows=[{name:'You',you:true,ph:gamePH(r.playingHcp,al),gross:(h.score!=null?h.score:null)}];
+  (r.players||[]).forEach(function(p){ var v=(p.scores&&p.scores[idx]!=null)?p.scores[idx]:null; rows.push({name:p.name,ph:gamePH(p.hcp,al),gross:v}); });
+  rows.forEach(function(x){ x.pts=x.gross!=null?gameHolePts(x.gross,x.ph,h.hdcp||0,h.par||4):null; });
+  return rows;
+}
+function gameUserGross(idx){ if(entryMode==='quick'){ var h=activeHoles[idx]; var q=h&&h.quick; return (q&&q.strokes!=null)?q.strokes:null; } var s=shotData[idx]; return (s&&s.length)?s.length:null; }
+function gamePartnerGross(pid,idx){ var sc=playerScores[pid]; return (sc&&sc[idx]!=null)?sc[idx]:null; }
+
+// ── 4-2-0 game: per-hole Stableford ranking → game pts (ties 3/3, 1/1, 2/2/2) ──
+function gameAward420(rows){
+  var out={}; rows.forEach(function(r){ out[r.name]=0; });
+  var sc=rows.filter(function(r){ return r.pts!=null; });
+  if(!sc.length) return out;
+  if(sc.length===1){ out[sc[0].name]=4; return out; }
+  var s=sc.slice().sort(function(a,b){ return b.pts-a.pts; });
+  if(sc.length===2){ if(s[0].pts===s[1].pts){ out[s[0].name]=3; out[s[1].name]=3; } else { out[s[0].name]=4; out[s[1].name]=2; } return out; }
+  var a=s[0],b=s[1],c=s[2];
+  if(a.pts===b.pts&&b.pts===c.pts){ out[a.name]=2; out[b.name]=2; out[c.name]=2; }
+  else if(a.pts===b.pts){ out[a.name]=3; out[b.name]=3; out[c.name]=0; }
+  else if(b.pts===c.pts){ out[a.name]=4; out[b.name]=1; out[c.name]=1; }
+  else { out[a.name]=4; out[b.name]=2; out[c.name]=0; }
+  return out;
+}
+// ── 2 vs 2: team best Stableford pts per hole wins the hole ──
+function gameTeams(g){
+  var mate=g.teammateName, others=g.partners.map(function(p){return p.name;}).filter(function(n){return n!==mate;});
+  return { a:['You',mate], b:others, aName:'You + '+mate, bName:others.join(' + ') };
+}
+function gameTeamHole(rows,keys){
+  var best=null; keys.forEach(function(k){ var r=rows.find(function(x){return x.name===k;}); if(r&&r.pts!=null&&(best==null||r.pts>best)) best=r.pts; });
+  return best;
+}
+// ── Match play helpers ──
+function gameMatchStrokes(phYou,phOpp,si){
+  if(phYou==null||phOpp==null) return {you:0,opp:0};
+  var diff=Math.abs(phYou-phOpp); if(!diff) return {you:0,opp:0};
+  var n=gameStrokesFor(diff,si);
+  return phYou>phOpp?{you:n,opp:0}:{you:0,opp:n};
+}
+function gameUpText(up,thru,total,aName,bName){
+  if(!thru) return aName+' vs '+bName+' · not started';
+  var rem=Math.max(0,total-thru);
+  if(Math.abs(up)>rem) return (up>0?aName:bName)+' wins '+Math.abs(up)+'&'+rem;
+  if(up===0) return aName+' vs '+bName+' · All square · thru '+thru;
+  return (up>0?aName:bName)+' '+Math.abs(up)+' up · thru '+thru;
+}
+
+// ── Live in-round game note (inside the partner scores box) ──
+function gameHoleNoteHtml(idx){
+  if(!activeGame||!activeGame.kind) return '';
+  var g=activeGame, hole=activeHoles[idx]||{}, si=hole.hdcp||0;
+  var rows=gameLiveRows(idx);
+  var strokeLine='';
+  if(si){
+    var sn=rows.filter(function(r){ return gameStrokesFor(r.ph,si)>0; });
+    var stxt=sn.length?sn.map(function(r){ var n=gameStrokesFor(r.ph,si); return r.name+(n>1?' ×'+n:''); }).join(', '):'no strokes';
+    if(g.kind==='stbf420') stxt+=' · pickup = 0 pts, zeros can tie';
+    else if(g.kind==='team2v2') stxt+=" · a pickup falls back to the partner's pts";
+    strokeLine='<div style="font-size:.68rem;color:var(--gl);margin-bottom:5px">● Hole '+(hole.hole||idx+1)+' (SI '+si+'): '+stxt+'</div>';
+  }
+  var card=function(inner){ return '<div style="margin:2px 0 4px;padding:5px 8px;background:rgba(201,168,76,.12);border:1px solid rgba(201,168,76,.35);border-radius:7px;font-size:.72rem;color:var(--cream)">'+inner+'</div>'; };
+  var html='';
+  if(g.kind==='stbf420'){
+    var any=rows.some(function(r){return r.pts!=null;});
+    if(any){
+      var aw=gameAward420(rows);
+      html+=card('Hole '+(hole.hole||idx+1)+': '+rows.map(function(r){return r.name+' <b>'+(r.pts!=null?r.pts:'–')+'</b>';}).join(' · ')+' Stbf pts → '+rows.map(function(r){return r.name+' <b style="color:var(--gl)">'+aw[r.name]+'</b>';}).join(' · ')+' game pts');
+      var tot={}; rows.forEach(function(r){tot[r.name]=0;});
+      for(var i=0;i<=idx;i++){ var a2=gameAward420(gameLiveRows(i)); for(var k in a2) tot[k]=(tot[k]||0)+a2[k]; }
+      html+=card('<b>4-2-0 game</b> · '+rows.map(function(r){return r.name+' <b style="color:var(--gl)">'+tot[r.name]+'</b>';}).join(' · ')+'<span style="float:right;font-size:.68rem;color:var(--tl)">thru '+(idx+1)+'</span>');
+    }
+  } else if(g.kind==='team2v2'){
+    var t=gameTeams(g), ba=gameTeamHole(rows,t.a), bb=gameTeamHole(rows,t.b);
+    if(ba!=null&&bb!=null) html+=card('Hole '+(hole.hole||idx+1)+": your side's best <b>"+ba+'</b> vs their best <b>'+bb+'</b> Stbf pts — <b>'+(ba===bb?'hole halved':(ba>bb?t.aName+' win the hole':t.bName+' win the hole'))+'</b>');
+    var up=0,thru=0;
+    for(var j=0;j<=idx;j++){ var rr=gameLiveRows(j), xa=gameTeamHole(rr,t.a), xb=gameTeamHole(rr,t.b); if(xa==null||xb==null) continue; thru++; if(xa>xb)up++; else if(xb>xa)up--; }
+    if(thru){
+      var rem=activeHoles.length-(idx+1);
+      var stat=Math.abs(up)>rem?((up>0?t.aName:t.bName)+' wins '+Math.abs(up)+'&'+rem):(up===0?'All square':((up>0?t.aName:t.bName)+' '+Math.abs(up)+' up'));
+      html+=card('<b>'+esc(t.aName)+'</b> vs <b>'+esc(t.bName)+'</b> · <b style="color:var(--gl)">'+stat+'</b><span style="float:right;font-size:.68rem;color:var(--tl)">thru '+thru+'</span>');
+    }
+  } else if(g.kind==='match'){
+    g.partners.forEach(function(p){
+      var phy=gamePH(g.you.hcp,g.allowance), pho=gamePH(p.hcp,g.allowance);
+      var up=0,thru=0;
+      for(var j=0;j<=idx;j++){
+        var gy=gameUserGross(j), go=gamePartnerGross(p.id,j);
+        if(gy==null||go==null) continue;
+        var st=gameMatchStrokes(phy,pho,(activeHoles[j]||{}).hdcp||0);
+        var ny=gy-st.you, no=go-st.opp;
+        thru++; if(ny<no)up++; else if(no<ny)up--;
+      }
+      var diff=(phy!=null&&pho!=null)?Math.abs(phy-pho):0;
+      var who=(phy!=null&&pho!=null)?(phy>pho?'You +'+diff:p.name+' +'+diff):'no hcp';
+      html+=card('<b>You vs '+esc(p.name)+'</b> · <b style="color:var(--gl)">'+(thru?(up===0?'All square':((up>0?'You':esc(p.name))+' '+Math.abs(up)+' up')):'not started')+'</b><span style="float:right;font-size:.68rem;color:var(--tl)">'+who+(thru?' · thru '+thru:'')+'</span>');
+    });
+  } else if(g.kind==='strokes'){
+    var parts=rows.map(function(r){
+      var gr=0,al2=0;
+      for(var j=0;j<=idx;j++){ var gg=r.you?gameUserGross(j):gamePartnerGross(g.partners.find(function(p){return p.name===r.name;}).id,j); if(gg==null) continue; gr+=gg; al2+=gameStrokesFor(r.ph,(activeHoles[j]||{}).hdcp||0); }
+      return {n:r.name,net:gr-al2};
+    }).sort(function(a,b){return a.net-b.net;});
+    html+=card('<b>Strokes</b> · net thru '+(idx+1)+': '+parts.map(function(p,i){return (i===0?'🏆 ':'')+p.n+' <b style="color:var(--gl)">'+p.net+'</b>';}).join(' · '));
+  } else if(g.kind==='stableford'){
+    var pts=rows.map(function(r){
+      var t=0;
+      for(var j=0;j<=idx;j++){ var gg=r.you?gameUserGross(j):gamePartnerGross(g.partners.find(function(p){return p.name===r.name;}).id,j); if(gg==null) continue; t+=gameHolePts(gg,r.ph,(activeHoles[j]||{}).hdcp||0,(activeHoles[j]||{}).par||4)||0; }
+      return {n:r.name,pts:t};
+    }).sort(function(a,b){return b.pts-a.pts;});
+    html+=card('<b>Stableford</b> thru '+(idx+1)+': '+pts.map(function(p,i){return (i===0?'🏆 ':'')+p.n+' <b style="color:var(--gl)">'+p.pts+'</b>';}).join(' · '));
+  }
+  return html+strokeLine;
+}
+
+// ── Setup screen: game picker ──
+function renderGame(){
+  var sec=document.getElementById('gameSection'); if(!sec) return;
+  var al=getGameAllowance();
+  var chip=function(k,label){ var sel=(setupGame===k)||(!k&&!setupGame); return '<button class="btn btn-ghost btn-sm" onclick="setSetupGame('+(k?"'"+k+"'":'null')+')" style="padding:7px 11px;font-size:.78rem;'+(sel?'background:var(--gl);color:#12241a;border-color:var(--gl);font-weight:700':'')+'">'+label+'</button>'; };
+  var html='<div style="font-size:.62rem;text-transform:uppercase;letter-spacing:.8px;color:var(--tl);margin:14px 0 6px">🎮 Game <span style="text-transform:none;letter-spacing:0">— optional, handicaps applied</span></div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+chip(null,'Just scores')+GAME_KINDS.map(function(g){return chip(g[0],g[1]);}).join('')+'</div>';
+  var named=roundPlayers.filter(function(p){return (p.name||'').trim();});
+  if(setupGame==='stbf420'){
+    html+='<div style="font-size:.7rem;color:var(--cream);margin-top:8px">Exactly 3 players · every hole: best Stableford pts get <b>4</b>, 2nd <b>2</b>, 3rd <b>0</b> game pts</div>'
+      +'<div style="font-size:.68rem;color:var(--tl);margin-top:4px">Ties: shared win 3/3 · shared 2nd 1/1 · all tied 2/2/2 · pickup = 0 pts (zeros can still tie)</div>'
+      +(named.length!==2?'<div style="font-size:.68rem;color:#e57373;margin-top:4px">Needs exactly 2 partners with names (you + 2 = 3 players).</div>':'');
+  } else if(setupGame==='team2v2'){
+    html+='<div style="display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap"><span style="font-size:.78rem;color:var(--cream)">Your teammate</span>'
+      +named.map(function(p){ var sel=gameTeammateId===p.id; return '<button class="btn btn-ghost btn-sm" onclick="setGameTeammate('+p.id+')" style="padding:6px 10px;font-size:.78rem;'+(sel?'background:var(--gl);color:#12241a;border-color:var(--gl);font-weight:700':'')+'">'+(sel?'✓ ':'')+esc(p.name)+'</button>'; }).join('')
+      +(gameTeammateId&&named.length===3?'<span style="font-size:.7rem;color:var(--tl)">→ You + '+esc((roundPlayers.find(function(p){return p.id===gameTeammateId;})||{}).name||'')+' vs '+esc(named.filter(function(p){return p.id!==gameTeammateId;}).map(function(p){return p.name;}).join(' + '))+'</span>':'')
+      +'</div>'
+      +'<div style="font-size:.7rem;color:var(--cream);margin-top:6px">Needs all 3 partners · each hole: your side\'s best Stableford pts vs theirs, better wins the hole</div>'
+      +(named.length!==3?'<div style="font-size:.68rem;color:#e57373;margin-top:4px">Needs all 3 partners with names (two teams of two).</div>':'')
+      +(named.length===3&&!gameTeammateId?'<div style="font-size:.68rem;color:#e57373;margin-top:4px">Pick your teammate.</div>':'');
+  } else if(setupGame==='match'){
+    html+='<div style="font-size:.7rem;color:var(--cream);margin-top:8px">A match against each partner: strokes off the lower handicap in each pair, by stroke index</div>';
+  } else if(setupGame==='strokes'){
+    html+='<div style="font-size:.7rem;color:var(--cream);margin-top:8px">Everyone\'s gross score, ranked by net (gross − playing handicap)</div>';
+  } else if(setupGame==='stableford'){
+    html+='<div style="font-size:.7rem;color:var(--cream);margin-top:8px">Stableford points per hole from gross + handicap strokes, most points wins</div>';
+  }
+  if(setupGame) html+='<div style="font-size:.68rem;color:var(--tl);margin-top:4px">Handicap allowance: <b>'+al+'%</b> of each entered handicap — change in ⚙️ Settings. Saved rounds keep the % they were played with.</div>';
+  sec.innerHTML=html;
+}
+function setSetupGame(k){ setupGame=k; if(k!=='team2v2') gameTeammateId=null; renderGame(); saveDraft(); }
+function setGameTeammate(id){ gameTeammateId=id; renderGame(); saveDraft(); }
+
+// ── startRound: validate the game and snapshot it onto the round ──
+var _gameStartRound=startRound;
+startRound=async function(){
+  if(setupGame){
+    var named=roundPlayers.filter(function(p){return (p.name||'').trim();});
+    if(setupGame==='stbf420'&&named.length!==2){ toast('The 4-2-0 game needs exactly 2 partners (you + 2 = 3 players)','err'); return; }
+    if(setupGame==='team2v2'){
+      if(named.length!==3){ toast('2 vs 2 needs all 3 partners (two teams of two)','err'); return; }
+      var mate=roundPlayers.find(function(p){return p.id===gameTeammateId&&(p.name||'').trim();});
+      if(!mate){ toast('Pick your teammate for 2 vs 2','err'); return; }
+    }
+  }
+  var before=activeHoles;
+  await _gameStartRound.apply(this,arguments);
+  if(activeHoles!==before){ // round actually started
+    if(setupGame){
+      activeGame={ kind:setupGame, allowance:getGameAllowance(),
+        you:{name:'You',hcp:(document.getElementById('playingHcp')||{}).value||''},
+        partners:roundPlayers.filter(function(p){return (p.name||'').trim();}).map(function(p){return {id:p.id,name:p.name,hcp:p.hcp};}),
+        teammateName:setupGame==='team2v2'?((roundPlayers.find(function(p){return p.id===gameTeammateId;})||{}).name||null):null };
+    } else activeGame=null;
+    try{ renderPartnerScoreInputs(0); }catch(e){}
+    saveDraft();
+  }
+};
+
+// ── finishRound: attach the game to the saved round ──
+var _gameFinishRound=finishRound;
+finishRound=function(){
+  var topBefore=rounds[0]&&rounds[0].id;
+  _gameFinishRound.apply(this,arguments);
+  if(activeGame&&rounds[0]&&String(rounds[0].id)!==String(topBefore)&&!rounds[0].game){
+    rounds[0].game=activeGame;
+    try{ localStorage.setItem('gcai_rounds',JSON.stringify(rounds)); }catch(e){}
+  }
+  activeGame=null; setupGame=null; gameTeammateId=null;
+  try{ renderGame(); }catch(e){}
+};
+
+// ── Partner score box: append the live game note ──
+var _gameRenderPSI=renderPartnerScoreInputs;
+renderPartnerScoreInputs=function(idx){
+  _gameRenderPSI.apply(this,arguments);
+  var box=document.getElementById('partnerScores'); if(!box||!activeGame) return;
+  var old=document.getElementById('gameHoleNote'); if(old) old.remove();
+  var html=gameHoleNoteHtml(idx); if(!html) return;
+  var note=document.createElement('div'); note.id='gameHoleNote'; note.innerHTML=html;
+  box.insertBefore(note,box.firstChild.nextSibling);
+};
+
+// ── Leaderboard: game-aware, original behavior preserved for game-less rounds ──
+var _gameOrigLeaderboard=renderLeaderboard;
+renderLeaderboard=function(r){
+  if(!r.game||!r.game.kind||!r.players||!r.players.length) return _gameOrigLeaderboard(r);
+  var g=r.game, al=g.allowance;
+  var field=[{name:'You',you:true,hcp:r.playingHcp,total:r.score}].concat((r.players||[]).map(function(p){return {name:p.name,hcp:p.hcp,total:p.total};}));
+  field.forEach(function(p){ p.ph=gamePH(p.hcp,al); });
+  var stbf={},i;
+  field.forEach(function(p){ stbf[p.name]=0; });
+  for(i=0;i<r.holes.length;i++){ var rows=gameRoundRows(r,i); rows.forEach(function(x){ if(x.pts!=null) stbf[x.name]+=x.pts; }); }
+  var td=function(v,style){ return '<td style="text-align:center;'+(style||'')+'">'+v+'</td>'; };
+  var table=function(cols,rowsHtml,foot){
+    return '<div class="card" style="margin-top:4px"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.7px;color:var(--tl);margin-bottom:8px">👥 Group Scorecard</div>'
+      +'<table style="width:100%;border-collapse:collapse;font-size:.85rem"><thead><tr style="font-size:.58rem;text-transform:uppercase;color:var(--tl)"><th style="text-align:left;padding:4px 6px">Player</th>'
+      +cols.map(function(c){return '<th style="padding:4px 6px">'+c+'</th>';}).join('')+'</tr></thead><tbody>'+rowsHtml+'</tbody></table>'
+      +(foot?'<div style="font-size:.66rem;color:var(--tl);margin-top:6px">'+foot+'</div>':'')+'</div>';
+  };
+  var card=function(title,big,sub){
+    return '<div class="card" style="margin-top:4px;border:1px solid rgba(201,168,76,.45)"><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.7px;color:var(--tl);margin-bottom:6px">🏆 '+title+'</div>'
+      +'<div style="font-size:1.05rem;color:var(--cream);font-weight:700">'+big+'</div>'
+      +(sub?'<div style="font-size:.72rem;color:var(--tl);margin-top:3px">'+sub+'</div>':'')+'</div>';
+  };
+  var rowHtml=function(p,cells,win){ return '<tr'+(p.you?' style="background:rgba(90,171,114,.12)"':'')+'><td style="padding:6px 6px">'+(win?'🏆 ':'')+esc(p.name)+'</td>'+cells+'</tr>'; };
+  var out='';
+  if(g.kind==='stbf420'){
+    var gp={}; field.forEach(function(p){gp[p.name]=0;});
+    for(i=0;i<r.holes.length;i++){ var aw=gameAward420(gameRoundRows(r,i)); for(var k in aw) gp[k]=(gp[k]||0)+aw[k]; }
+    var sorted=field.slice().sort(function(a,b){return gp[b.name]-gp[a.name];});
+    out+=card('4-2-0 game',esc(sorted[0].name)+' wins · '+gp[sorted[0].name]+' game pts','Per hole: best Stableford pts 4 · 2nd 2 · 3rd 0 — shared win 3/3, shared 2nd 1/1, all tied 2/2/2');
+    out+=table(['Gross','PH','Stbf','Game'],sorted.map(function(p,j){ return rowHtml(p,td(p.total)+td(p.ph!=null?p.ph:'—','color:var(--tl)')+td(stbf[p.name],'font-weight:600')+td(gp[p.name],'font-weight:700;color:var(--gl)'),j===0); }),
+      'Stableford &amp; game pts are separate tallies. PH = entered handicap × '+al+'% (game allowance at round time). Pickup = 0 Stbf pts — zeros can tie.');
+    return out;
+  }
+  if(g.kind==='team2v2'){
+    var t=gameTeams(g),up=0,wins=0,loss=0,halved=0,thru=0,closedAt=0,closedUp=0,closedRem=0;
+    for(i=0;i<r.holes.length;i++){
+      var rr=gameRoundRows(r,i),ba=gameTeamHole(rr,t.a),bb=gameTeamHole(rr,t.b);
+      if(ba==null||bb==null) continue;
+      thru++; if(ba>bb){up++;wins++;} else if(bb>ba){up--;loss++;} else halved++;
+      var remI=r.holes.length-thru;
+      if(Math.abs(up)>remI){ closedAt=thru; closedUp=up; closedRem=remI; break; }
+    }
+    var res=closedAt?((closedUp>0?t.aName:t.bName)+' win '+Math.abs(closedUp)+'&'+closedRem):(up===0?'All square':((up>0?t.aName:t.bName)+' win '+Math.abs(up)+' up'));
+    out+=card('2 vs 2 · best Stableford per hole',esc(res),'Holes '+wins+'–'+loss+', '+halved+' halved'+(closedAt?' · closed out on hole '+closedAt:'')+' · each side\'s best Stableford pts wins the hole');
+    var s2=field.slice().sort(function(a,b){return stbf[b.name]-stbf[a.name];});
+    out+=table(['Gross','PH','Stbf'],s2.map(function(p,j){ return rowHtml(p,td(p.total)+td(p.ph!=null?p.ph:'—','color:var(--tl)')+td(stbf[p.name],'font-weight:700;color:var(--gl)'),false); }),
+      'PH = entered handicap × '+al+'% (game allowance at round time). Pickup falls back to the partner\'s pts.');
+    return out;
+  }
+  if(g.kind==='match'){
+    (r.players||[]).forEach(function(p){
+      var phy=gamePH(r.playingHcp,al), pho=gamePH(p.hcp,al);
+      var up=0,thru=0,cAt=0,cUp=0,cRem=0;
+      for(i=0;i<r.holes.length;i++){
+        var h=r.holes[i],idx=(h.hole||i+1)-1;
+        var gy=h.score!=null?h.score:null, go=(p.scores&&p.scores[idx]!=null)?p.scores[idx]:null;
+        if(gy==null||go==null) continue;
+        var st=gameMatchStrokes(phy,pho,h.hdcp||0);
+        thru++; if(gy-st.you<go-st.opp)up++; else if(go-st.opp<gy-st.you)up--;
+        var rI=r.holes.length-thru;
+        if(Math.abs(up)>rI){ cAt=thru; cUp=up; cRem=rI; break; }
+      }
+      var res2=!thru?'No scores':(cAt?((cUp>0?'You':esc(p.name))+' win '+Math.abs(cUp)+'&'+cRem):(up===0?'All square':((up>0?'You':esc(p.name))+' '+Math.abs(up)+' up')));
+      var diff=(phy!=null&&pho!=null)?Math.abs(phy-pho):null;
+      out+=card('Match · You vs '+esc(p.name),res2,(diff!=null?((phy>pho?'You received ':'They received ')+diff+' strokes (PH '+phy+' vs '+pho+', off the lower, by stroke index)'):'No handicaps entered'));
+    });
+  }
+  var cols=['Gross','PH','Net','Stbf'];
+  var s3=field.slice().sort(function(a,b){
+    if(g.kind==='stableford') return stbf[b.name]-stbf[a.name];
+    var an=a.ph!=null?a.total-a.ph:1e9, bn=b.ph!=null?b.total-b.ph:1e9; return an-bn;
+  });
+  out+=table(cols,s3.map(function(p,j){ var net=p.ph!=null?p.total-p.ph:'—'; return rowHtml(p,td(p.total)+td(p.ph!=null?p.ph:'—','color:var(--tl)')+td(net,'font-weight:600')+td(stbf[p.name],'font-weight:700;color:var(--gl)'),j===0&&(g.kind==='strokes'||g.kind==='stableford')); }),
+    'PH = entered handicap × '+al+'% (game allowance at round time). Stableford from gross + PH strokes by hole SI.');
+  if(g.kind==='strokes') out=card('Strokes',esc(s3[0].name)+' wins · net '+(s3[0].ph!=null?s3[0].total-s3[0].ph:s3[0].total),'Lowest net (gross − playing handicap)')+out;
+  if(g.kind==='stableford') out=card('Stableford',esc(s3[0].name)+' wins · '+stbf[s3[0].name]+' pts','Most Stableford points')+out;
+  return out;
+};
+
+// ── Draft: persist the game selection/in-round game with the round ──
+var _gameSaveDraft=saveDraft;
+saveDraft=function(){
+  var ok=_gameSaveDraft.apply(this,arguments);
+  if(ok&&(setupGame||activeGame||gameTeammateId)){
+    try{
+      var d=JSON.parse(localStorage.getItem('gcai_draft')||'null');
+      if(d){ d.setupGame=setupGame; d.gameTeammateId=gameTeammateId; d.activeGame=activeGame; localStorage.setItem('gcai_draft',JSON.stringify(d)); }
+    }catch(e){}
+  }
+  return ok;
+};
+var _gameLoadDraft=loadDraft;
+loadDraft=function(){
+  try{
+    var d=JSON.parse(localStorage.getItem('gcai_draft')||'null');
+    if(d&&(d.setupGame||d.activeGame||d.gameTeammateId)) _pendingGameRestore={setupGame:d.setupGame||null,gameTeammateId:d.gameTeammateId||null,activeGame:d.activeGame||null};
+  }catch(e){}
+  return _gameLoadDraft.apply(this,arguments);
+};
+var _gameRenderHole=renderHole;
+renderHole=function(idx){
+  _gameRenderHole.apply(this,arguments);
+  if(_pendingGameRestore){ setupGame=_pendingGameRestore.setupGame; gameTeammateId=_pendingGameRestore.gameTeammateId; activeGame=_pendingGameRestore.activeGame; _pendingGameRestore=null; try{renderGame();}catch(e){} }
+};
+
+// ── discardRound: clear game state too ──
+var _gameDiscard=discardRound;
+discardRound=function(){ setupGame=null; activeGame=null; gameTeammateId=null; _gameDiscard.apply(this,arguments); try{renderGame();}catch(e){} };
+
+// ── Settings: sync the allowance input when opening ──
+var _gameOpenSettings=openSettings;
+openSettings=function(){
+  _gameOpenSettings.apply(this,arguments);
+  var inp=document.getElementById('gameAllowanceInput'); if(inp) inp.value=getGameAllowance();
+};
+
+// ── Partners list re-render keeps the game section in sync ──
+var _gameRenderPartners=renderPartners;
+renderPartners=function(){ _gameRenderPartners.apply(this,arguments); try{renderGame();}catch(e){} };
+try{ renderGame(); }catch(e){}
 
 </script>
 </body>
