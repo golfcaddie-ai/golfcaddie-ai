@@ -544,6 +544,14 @@ select.finput{-webkit-appearance:none;appearance:none;background-image:url("data
           </div>
         </div>
 
+        <div id="courseReadiness" style="margin-top:12px;padding:10px 12px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.09);border-radius:8px;font-size:.82rem">
+          <div style="font-weight:600;color:var(--gold)">Course readiness</div>
+          <div id="courseReadinessBody" style="color:var(--cream);line-height:1.5">
+            <div style="color:var(--tl)">Select a course to check</div>
+            <div style="color:var(--tl);opacity:.65;font-size:.78rem;margin-top:2px">Scorecard · green points · offline copy</div>
+          </div>
+        </div>
+
         <div style="margin-top:12px">
           <label class="flabel">Tee Box</label>
           <div class="tee-selector">
@@ -2246,6 +2254,7 @@ function selectTee(tee) {
     loadTeeHoles(selectedCourseData.tees[tee]);
     _loadedCourseName = courseName || selectedCourseData.name || _loadedCourseName;
   }
+  renderCourseReadiness();
 }
 
 function loadTeeHoles(teeData) {
@@ -2294,6 +2303,7 @@ function onCourseType() {
     document.getElementById('coursePar').value = 72;
     _loadedCourseName = null;
   }
+  renderCourseReadiness();
 
   if (val.length < 2) return;
 
@@ -2560,6 +2570,7 @@ async function selectFoundCourse(idx) {
 
   // Claude web search for the full scorecard (needs an Anthropic key)
   await fetchHoleDetails(c);
+  renderCourseReadiness();
 }
 
 function selectSavedCourse(name) {
@@ -2569,6 +2580,7 @@ function selectSavedCourse(name) {
   document.getElementById('courseSelectedName').textContent = name;
   _loadedCourseName = name;
   loadCourseForTee(name, selectedTee);
+  renderCourseReadiness();
 }
 
 // Load a saved course for a specific tee, auto-calculating playing hcp
@@ -2617,6 +2629,7 @@ function loadCourseForTee(name, tee) {
   document.getElementById('courseSelectedMeta').textContent = metaStr;
 
   showRatingSlopeBoxIfMissing(meta);
+  renderCourseReadiness();
 }
 
 // Show the "enter rating/slope" box whenever the loaded tee has no real rating/slope on
@@ -2657,6 +2670,82 @@ function saveCourseRatingSlope() {
   toast('Rating & slope saved for ' + selectedTee + ' tees','ok');
 }
 
+// Readiness panel under the course selector: shows, before he leaves, whether the
+// selected course has a scorecard for the chosen tee, green points for GPS
+// distances, and a local copy on this phone. Informational only — it never blocks
+// starting a round, and Quick entry needs none of it.
+function renderCourseReadiness() {
+  var body = document.getElementById('courseReadinessBody');
+  if (!body) return;
+  var name = ((document.getElementById('courseInput')||{}).value||'').trim();
+  if (!name) {
+    body.innerHTML = '<div style="color:var(--tl)">Select a course to check</div>'
+      + '<div style="color:var(--tl);opacity:.65;font-size:.78rem;margin-top:2px">Scorecard \u00b7 green points \u00b7 offline copy</div>';
+    return;
+  }
+  function row(state, text) {
+    var mark = state === 'ok' ? '<span style="color:var(--gl)">\u2713</span>'
+             : state === 'warn' ? '<span style="color:var(--gold)">\u26a0</span>'
+             : '<span style="color:var(--tl)">\u00b7</span>';
+    return '<div style="display:flex;gap:7px;margin-top:3px"><span style="flex:0 0 auto">'+mark+'</span><span>'+text+'</span></div>';
+  }
+  // Saved local copy (case-insensitive name match)
+  var savedName = null;
+  if (courses[name]) savedName = name;
+  else { var nl = name.toLowerCase(); for (var k in courses) { if (k.toLowerCase() === nl) { savedName = k; break; } } }
+  var tmpl = savedName ? courses[savedName] : null;
+  var tees = {};
+  if (tmpl) tees = tmpl.tees ? tmpl.tees : { default: { holes: tmpl } };
+  var teeKeys = Object.keys(tees).filter(function(t){ return tees[t] && tees[t].holes && tees[t].holes.length; });
+
+  // Scorecard for the selected tee: saved template, else freshly loaded search data
+  var holes = null, scoreSource = '';
+  if (teeKeys.indexOf(selectedTee) >= 0) { holes = tees[selectedTee].holes; scoreSource = 'saved'; }
+  else if (selectedCourseData && selectedCourseData.tees && _loadedCourseName && name.toLowerCase() === String(_loadedCourseName).toLowerCase()) {
+    var sd = selectedCourseData.tees[selectedTee];
+    if (!sd) { var fk = Object.keys(selectedCourseData.tees)[0]; sd = selectedCourseData.tees[fk]; }
+    if (sd && sd.holes && sd.holes.length) { holes = sd.holes; scoreSource = 'search'; }
+  }
+
+  var nHoles = holes ? holes.length : (teeKeys.length ? tees[teeKeys[0]].holes.length : 18);
+
+  // Green points mapped for this course (green store keys are 'Course name|hole')
+  var greens = loadGreens();
+  var mapped = 0;
+  for (var gk in greens) {
+    var parts = gk.split('|');
+    if (parts.length !== 2) continue;
+    if (parts[0].trim().toLowerCase() !== name.toLowerCase()) continue;
+    var hn = parseInt(parts[1], 10);
+    if (!(hn >= 1 && hn <= nHoles)) continue;
+    var rec = greens[gk];
+    if (rec && (rec.c || rec.f || rec.b || rec.lat != null)) mapped++;
+  }
+
+  var html = '';
+  if (holes) {
+    var withPar = holes.filter(function(h){ return h && h.par; }).length;
+    var withMet = holes.filter(function(h){ return h && h.metres; }).length;
+    if (withPar >= holes.length && withMet >= holes.length)
+      html += row('ok', 'Scorecard ('+selectedTee+' tees): '+holes.length+' holes with pars and metres');
+    else if (withPar >= holes.length)
+      html += row('warn', 'Scorecard ('+selectedTee+' tees): pars on file, metres missing for '+(holes.length-withMet)+' of '+holes.length+' holes');
+    else
+      html += row('warn', 'Scorecard ('+selectedTee+' tees): only '+withPar+' of '+holes.length+' holes have pars \u2014 check before you play');
+  } else if (teeKeys.length) {
+    html += row('warn', 'No '+selectedTee+' scorecard on file \u2014 saved tees: '+teeKeys.join(', '));
+  } else {
+    html += row('warn', 'No scorecard yet \u2014 search for the course or enter hole data below');
+  }
+  if (mapped >= nHoles) html += row('ok', 'Green points: all '+nHoles+' holes mapped for GPS distances');
+  else if (mapped > 0) html += row('warn', 'Green points: '+mapped+' of '+nHoles+' holes mapped \u2014 front/centre/back distances only on mapped holes');
+  else html += row('warn', 'No green points mapped \u2014 no GPS distances. Score entry and Quick entry work regardless');
+  if (savedName) html += row('ok', 'Local copy on this phone ('+teeKeys.join(', ')+' tee'+(teeKeys.length===1?'':'s')+') \u2014 works offline');
+  else if (scoreSource === 'search') html += row('warn', 'Not saved on this phone yet \u2014 a local copy is saved when you start the round');
+  else html += row('warn', 'No local copy on this phone');
+  body.innerHTML = html;
+}
+
 function clearCourse() {
   document.getElementById('courseInput').value='';
   document.getElementById('courseSelected').style.display='none';
@@ -2665,6 +2754,7 @@ function clearCourse() {
   hideSuggestions();
   quickSetup(9);
   document.getElementById('coursePar').value = 72;
+  renderCourseReadiness();
 }
 
 // ══════════════════════════════════════════════
