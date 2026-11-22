@@ -8189,6 +8189,9 @@ function gameHoleNoteHtml(idx){
 // ── Setup screen: game picker ──
 function renderGame(){
   var sec=document.getElementById('gameSection'); if(!sec) return;
+  setupGame=null; gameTeammateId=null;
+  sec.innerHTML='<div style="font-size:.62rem;text-transform:uppercase;letter-spacing:.8px;color:var(--tl);margin:14px 0 6px">\U0001F3AE Game</div><div style="font-size:.72rem;color:var(--cream);margin-top:6px">Games are temporarily unavailable while the handicap calculation is being fixed. Scores and partners work as usual.</div>';
+  return;
   var al=getGameAllowance();
   var chip=function(k,label){ var sel=(setupGame===k)||(!k&&!setupGame); return '<button class="btn btn-ghost btn-sm" onclick="setSetupGame('+(k?"'"+k+"'":'null')+')" style="padding:7px 11px;font-size:.78rem;'+(sel?'background:var(--gl);color:#12241a;border-color:var(--gl);font-weight:700':'')+'">'+label+'</button>'; };
   var html='<div style="font-size:.62rem;text-transform:uppercase;letter-spacing:.8px;color:var(--tl);margin:14px 0 6px">🎮 Game <span style="text-transform:none;letter-spacing:0">— optional, handicaps applied</span></div>'
@@ -8222,6 +8225,7 @@ function setGameTeammate(id){ gameTeammateId=id; renderGame(); saveDraft(); }
 // ── startRound: validate the game and snapshot it onto the round ──
 var _gameStartRound=startRound;
 startRound=async function(){
+  if(setupGame){ setupGame=null; gameTeammateId=null; toast('Games are temporarily unavailable','err'); return; }
   if(setupGame){
     var named=roundPlayers.filter(function(p){return (p.name||'').trim();});
     if(setupGame==='stbf420'&&named.length!==2){ toast('The 4-2-0 game needs exactly 2 partners (you + 2 = 3 players)','err'); return; }
